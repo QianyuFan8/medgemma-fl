@@ -5,4 +5,4 @@ NCT-*
 CRC-VAL-*
 
 # prepared data
-data/
+data/.DS_Store
