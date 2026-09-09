@@ -63,6 +63,19 @@ target_data/
 
 ---
 
+## Data Alignment & Harmonization Pipeline
+
+To construct a synchronized multi-modal dataset for AI model training:
+
+1. **ID Mapping**: Raw GDC RNA-seq files (indexed by file UUIDs) are unmasked and mapped to standard patient `Case ID`s (e.g., `TARGET-20-PAWICS`) via `gdc_sample_sheet_rnaseq.tsv`.
+2. **Clinical Primary Key Extraction**: Patient identifiers in `clinical.tsv` (`demographic.submitter_id`) are extracted as primary keys to resolve discrepancies with raw GDC UUIDs.
+3. **Intersection & Re-indexing**:
+   $$\text{Common Patients} = \mathcal{P}_{\text{RNA-seq}} \cap \mathcal{P}_{\text{Clinical}}$$
+   Both the Log2-TPM matrix ($X$) and clinical labels ($Y$) are sub-sampled and re-ordered strictly by this intersection ($N = 3,214$ matched patients).
+4. **1-to-1 Consistency**: Row $i$ in `target_rnaseq_log2_tpm.parquet` maps 1-to-1 with Row $i$ in `target_clinical_cleaned.csv`, guaranteeing zero data leakage or misaligned supervision signals during DataLoader batching.
+
+---
+
 ## Quick Start for Model Training
 
 ### 1. Download Processed Parquet Feature Matrix
