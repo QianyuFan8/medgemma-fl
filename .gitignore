@@ -6,3 +6,5 @@ CRC-VAL-*
 
 # prepared data
 data/.DS_Store
+.DS_Store
+target_data/processed/*.parquet
