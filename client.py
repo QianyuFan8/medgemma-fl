@@ -98,7 +98,7 @@ def _build_training_args(args, output_dir: str, do_eval: bool) -> SFTConfig:
         learning_rate=args.learning_rate,
         bf16=True,
         max_grad_norm=0.3,
-        warmup_ratio=0.03,
+        warmup_steps=0.03,
         lr_scheduler_type="linear",
         report_to=args.report_to,
         dataset_kwargs={"skip_prepare_dataset": True},

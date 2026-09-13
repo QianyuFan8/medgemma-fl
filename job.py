@@ -26,7 +26,7 @@ from custom_aggregators import HLoRAMaxRankAggregator, NaiveMaxRankAggregator
 from data_utils import DEFAULT_MODEL_NAME_OR_PATH
 
 from nvflare.app_opt.pt.recipes.fedavg import FedAvgRecipe
-from nvflare.recipe import SimEnv, add_experiment_tracking, set_per_site_config
+from nvflare.recipe import SimEnv, add_experiment_tracking
 
 
 def define_parser():
@@ -266,6 +266,7 @@ def main():
     }
 
     recipe = FedAvgRecipe(
+        per_site_config=per_site_config,
         name=job_name,
         min_clients=n_clients,
         num_rounds=args.num_rounds,
@@ -280,7 +281,6 @@ def main():
         server_expected_format="pytorch",
         key_metric="",
     )
-    set_per_site_config(recipe, per_site_config)
     _configure_timeouts(recipe, client_names)
 
     if args.wandb:
