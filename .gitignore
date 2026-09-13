@@ -8,3 +8,13 @@ CRC-VAL-*
 data/.DS_Store
 .DS_Store
 target_data/processed/*.parquet
+
+# Local environment and generated files
+/.venv/
+/data/
+/logs/
+/runs/
+__pycache__/
+*.py[cod]
+/job.py.before-nvflare-fix
+/client.py.before-warmup-fix
