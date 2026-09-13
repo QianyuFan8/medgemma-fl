@@ -110,7 +110,8 @@ def get_model_device(model) -> torch.device:
     return next(model.parameters()).device
 
 
-def generate_response_texts(model, processor, images: list, max_new_tokens: int) -> list[str]:
+def prepare_inference_inputs(model, processor, images: list):
+    """Build the shared image + classification prompt for inference and auditing."""
     texts = []
     batch_images = []
     for image in images:
@@ -127,7 +128,11 @@ def generate_response_texts(model, processor, images: list, max_new_tokens: int)
         batch_images.append([image])
 
     inputs = processor(text=texts, images=batch_images, return_tensors="pt", padding=True)
-    inputs = inputs.to(get_model_device(model))
+    return inputs.to(get_model_device(model))
+
+
+def generate_response_texts(model, processor, images: list, max_new_tokens: int) -> list[str]:
+    inputs = prepare_inference_inputs(model, processor, images)
     prompt_length = inputs["input_ids"].shape[1]
     with torch.inference_mode():
         output_ids = model.generate(**inputs, max_new_tokens=max_new_tokens)
