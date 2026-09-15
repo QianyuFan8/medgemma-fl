@@ -23,7 +23,8 @@ import re
 import shlex
 
 from custom_aggregators import HLoRAMaxRankAggregator, NaiveMaxRankAggregator
-from data_utils import DEFAULT_MODEL_NAME_OR_PATH
+from data_utils import DEFAULT_MODEL_NAME_OR_PATH, DEFAULT_RNASEQ_DATA_DIR, TASK_RNASEQ
+from model import DEFAULT_MODULES_TO_SAVE
 
 from nvflare.app_opt.pt.recipes.fedavg import FedAvgRecipe
 from nvflare.recipe import SimEnv, add_experiment_tracking
@@ -34,12 +35,24 @@ def define_parser():
     parser.add_argument("--n_clients", type=int, default=3, help="Number of federated clients (default: 3).")
     parser.add_argument("--num_rounds", type=int, default=3, help="Federated rounds (default: 3).")
     parser.add_argument(
+        "--task",
+        type=str,
+        choices=("histopathology", "rnaseq"),
+        default="histopathology",
+        help="Fine-tuning task. Use rnaseq for TARGET diagnosis classification from TMM-CPM prompts.",
+    )
+    parser.add_argument(
         "--gpu",
         type=str,
         default=None,
         help='GPU IDs per client, e.g. "[0],[1],[2]". When omitted, one GPU is assigned per client automatically.',
     )
-    parser.add_argument("--data_dir", type=str, default="./data", help="Root directory containing site-1, site-2, ...")
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default=None,
+        help="Root directory containing site-1, site-2, ... Defaults to ./data or ./data/rnaseq by task.",
+    )
     parser.add_argument(
         "--image_root",
         type=str,
@@ -114,10 +127,40 @@ def define_parser():
         ),
     )
     parser.add_argument(
+        "--quantized",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Client-side 4-bit QLoRA. Use --no-quantized for bf16 LoRA communication-study runs.",
+    )
+    parser.add_argument(
+        "--modules_to_save",
+        type=str,
+        default=None,
+        help="Comma-separated extra PEFT modules. Empty string disables them. RNA-seq defaults to none.",
+    )
+    parser.add_argument(
+        "--comm_log_dir",
+        type=str,
+        default=None,
+        help="Directory for per-round JSONL communication and accuracy logs.",
+    )
+    parser.add_argument(
+        "--experiment_name",
+        type=str,
+        default=None,
+        help="Optional experiment name written into communication logs and the simulator job name.",
+    )
+    parser.add_argument(
         "--workspace",
         type=str,
         default="/tmp/nvflare/simulation",
         help="Simulation workspace root (default: /tmp/nvflare/simulation).",
+    )
+    parser.add_argument(
+        "--balance_labels",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Oversample minority diagnosis labels within each site (default: off).",
     )
     return parser.parse_args()
 
@@ -204,7 +247,23 @@ def _parse_site_lora_ranks(site_lora_ranks: str | None, n_clients: int, global_l
     return ranks
 
 
-def _build_train_args(args, site_data_path: str, image_root: str, report_to: str, local_lora_rank: int) -> str:
+def _parse_modules_to_save(raw_value: str | None, task: str) -> list[str]:
+    if raw_value is None:
+        return [] if task == TASK_RNASEQ else list(DEFAULT_MODULES_TO_SAVE)
+    stripped = raw_value.strip()
+    if not stripped:
+        return []
+    return [part.strip() for part in stripped.split(",") if part.strip()]
+
+
+def _build_train_args(
+    args,
+    site_data_path: str,
+    image_root: str,
+    report_to: str,
+    local_lora_rank: int,
+    modules_to_save: list[str],
+) -> str:
     train_args = [
         "--data_path",
         site_data_path,
@@ -214,11 +273,23 @@ def _build_train_args(args, site_data_path: str, image_root: str, report_to: str
         args.model_name_or_path,
         "--lora_rank",
         str(local_lora_rank),
+        "--task",
+        args.task,
+        "--n_clients",
+        str(args.n_clients),
+        "--modules_to_save",
+        ",".join(modules_to_save),
     ]
+    train_args.append("--quantized" if args.quantized else "--no-quantized")
     if args.max_steps is not None:
         train_args.extend(["--max_steps", str(args.max_steps)])
     else:
         train_args.extend(["--num_train_epochs", str(args.num_train_epochs)])
+    if args.comm_log_dir:
+        train_args.extend(["--comm_log_dir", os.path.abspath(args.comm_log_dir)])
+    if args.experiment_name:
+        train_args.extend(["--experiment_name", args.experiment_name])
+    train_args.append("--balance_labels" if args.balance_labels else "--no-balance_labels")
     train_args.extend(
         [
             "--learning_rate",
@@ -240,12 +311,23 @@ def main():
     args = define_parser()
     n_clients = args.n_clients
     client_names = [f"site-{idx}" for idx in range(1, n_clients + 1)]
+    if args.data_dir is None:
+        args.data_dir = DEFAULT_RNASEQ_DATA_DIR if args.task == TASK_RNASEQ else "./data"
     data_dir = os.path.abspath(args.data_dir)
     image_root = os.path.abspath(args.image_root)
+    modules_to_save = _parse_modules_to_save(args.modules_to_save, args.task)
     site_lora_ranks = _parse_site_lora_ranks(args.site_lora_ranks, n_clients, args.global_lora_rank)
-    job_name = "medgemma" if args.lora_aggregation == "naive" else "medgemma-hlora"
+    if args.experiment_name:
+        job_name = args.experiment_name
+    elif args.task == TASK_RNASEQ:
+        job_name = "medgemma-rnaseq" if args.lora_aggregation == "naive" else "medgemma-rnaseq-hlora"
+    else:
+        job_name = "medgemma" if args.lora_aggregation == "naive" else "medgemma-hlora"
     rank_summary = ", ".join(f"{site_name}={rank}" for site_name, rank in zip(client_names, site_lora_ranks))
+    print(f"Task: {args.task}")
     print(f"Client LoRA ranks: {rank_summary}")
+    print(f"Quantized QLoRA: {args.quantized}")
+    print(f"modules_to_save: {modules_to_save or '[]'}")
 
     per_site_config = {}
     report_to = "wandb" if args.wandb else "none"
@@ -257,12 +339,17 @@ def main():
             image_root=image_root,
             report_to=report_to,
             local_lora_rank=local_lora_rank,
+            modules_to_save=modules_to_save,
         )
         per_site_config[site_name] = {"train_args": train_args}
 
     model = {
         "class_path": "model.MedGemmaLoRAModel",
-        "args": {"model_name_or_path": args.model_name_or_path, "lora_rank": args.global_lora_rank},
+        "args": {
+            "model_name_or_path": args.model_name_or_path,
+            "lora_rank": args.global_lora_rank,
+            "modules_to_save": modules_to_save,
+        },
     }
 
     recipe = FedAvgRecipe(

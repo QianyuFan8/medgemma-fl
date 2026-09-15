@@ -1,0 +1,55 @@
+{
+  "experiments": [
+    {
+      "name": "lora-r4",
+      "rank": 4,
+      "quantized": false,
+      "bytes_per_round": 230986752.0,
+      "local_accuracy": 0.49912816041848296,
+      "accuracy": 0.4364,
+      "global_model": "/tmp/nvflare/simulation/lora-r4/server/simulate_job/app_server/FL_global_model.pt",
+      "comm_log_dir": "/home/ubuntu/medgemma-fl/comm_logs/lora-r4"
+    },
+    {
+      "name": "lora-r8",
+      "rank": 8,
+      "quantized": false,
+      "bytes_per_round": 461973504.0,
+      "local_accuracy": 0.5876198779424586,
+      "accuracy": 0.4364,
+      "global_model": "/tmp/nvflare/simulation/lora-r8/server/simulate_job/app_server/FL_global_model.pt",
+      "comm_log_dir": "/home/ubuntu/medgemma-fl/comm_logs/lora-r8"
+    },
+    {
+      "name": "lora-r16",
+      "rank": 16,
+      "quantized": false,
+      "bytes_per_round": 923947008.0,
+      "local_accuracy": 0.6222870837176587,
+      "accuracy": 0.4364,
+      "global_model": "/tmp/nvflare/simulation/lora-r16/server/simulate_job/app_server/FL_global_model.pt",
+      "comm_log_dir": "/home/ubuntu/medgemma-fl/comm_logs/lora-r16"
+    },
+    {
+      "name": "lora-r32",
+      "rank": 32,
+      "quantized": false,
+      "bytes_per_round": 1847894016.0,
+      "local_accuracy": 0.5623491654347195,
+      "accuracy": 0.4364,
+      "global_model": "/tmp/nvflare/simulation/lora-r32/server/simulate_job/app_server/FL_global_model.pt",
+      "comm_log_dir": "/home/ubuntu/medgemma-fl/comm_logs/lora-r32"
+    },
+    {
+      "name": "qlora-r16",
+      "rank": 16,
+      "quantized": true,
+      "bytes_per_round": 461973504.0,
+      "local_accuracy": 0.6024411508282476,
+      "accuracy": 0.5152,
+      "global_model": "/tmp/nvflare/simulation/qlora-r16/server/simulate_job/app_server/FL_global_model.pt",
+      "comm_log_dir": "/home/ubuntu/medgemma-fl/comm_logs/qlora-r16"
+    }
+  ],
+  "full_ft_bytes_per_round_theoretical": 48000000000
+}

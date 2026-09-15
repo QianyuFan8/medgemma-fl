@@ -1,0 +1,10 @@
+{
+  "name": "lora-r4",
+  "rank": 4,
+  "quantized": false,
+  "bytes_per_round": 230986752.0,
+  "local_accuracy": 0.49912816041848296,
+  "accuracy": 0.4364,
+  "global_model": "/tmp/nvflare/simulation/lora-r4/server/simulate_job/app_server/FL_global_model.pt",
+  "comm_log_dir": "/home/ubuntu/medgemma-fl/comm_logs/lora-r4"
+}

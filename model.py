@@ -39,18 +39,21 @@ DEFAULT_TARGET_MODULES = "all-linear"
 MEDGEMMA_IMAGE_TOKEN_ID = 262144
 
 
-def create_lora_config(lora_rank: int = DEFAULT_LORA_R):
+def create_lora_config(lora_rank: int = DEFAULT_LORA_R, modules_to_save: list[str] | None = None):
     from peft import LoraConfig
+
+    if modules_to_save is None:
+        modules_to_save = list(DEFAULT_MODULES_TO_SAVE)
 
     return LoraConfig(
         lora_alpha=DEFAULT_LORA_ALPHA,
         lora_dropout=DEFAULT_LORA_DROPOUT,
         r=lora_rank,
         bias="none",
-        ensure_weight_tying=True,
+        ensure_weight_tying=bool(modules_to_save),
         target_modules=DEFAULT_TARGET_MODULES,
         task_type="CAUSAL_LM",
-        modules_to_save=list(DEFAULT_MODULES_TO_SAVE),
+        modules_to_save=list(modules_to_save) if modules_to_save else None,
     )
 
 
@@ -131,13 +134,17 @@ def create_peft_medgemma_model(
     quantized: bool = False,
     device_map=None,
     lora_rank: int = DEFAULT_LORA_R,
+    modules_to_save: list[str] | None = None,
 ):
     from peft import get_peft_model, prepare_model_for_kbit_training
 
     base_model = load_medgemma_base_model(model_name_or_path, quantized=quantized, device_map=device_map)
     if quantized:
         base_model = prepare_model_for_kbit_training(base_model)
-    return get_peft_model(base_model, create_lora_config(lora_rank=lora_rank))
+    return get_peft_model(
+        base_model,
+        create_lora_config(lora_rank=lora_rank, modules_to_save=modules_to_save),
+    )
 
 
 def apply_adapter_state(model, adapter_state: dict[str, Any]) -> None:
@@ -151,6 +158,12 @@ def get_adapter_state_dict(model) -> dict[str, torch.Tensor]:
 
     adapter_state = get_peft_model_state_dict(model)
     return {key: value.detach().cpu().contiguous() for key, value in adapter_state.items()}
+
+
+def infer_modules_to_save_from_state_dict(adapter_state: dict[str, Any]) -> list[str] | None:
+    if any("modules_to_save" in key for key in adapter_state):
+        return None
+    return []
 
 
 def infer_uniform_lora_rank_from_state_dict(adapter_state: dict[str, Any]) -> int:
@@ -174,14 +187,21 @@ def infer_uniform_lora_rank_from_state_dict(adapter_state: dict[str, Any]) -> in
 class MedGemmaLoRAModel(nn.Module):
     """Server-side initial model that exposes only LoRA adapter weights."""
 
-    def __init__(self, model_name_or_path: str = DEFAULT_MODEL_NAME_OR_PATH, lora_rank: int = DEFAULT_LORA_R):
+    def __init__(
+        self,
+        model_name_or_path: str = DEFAULT_MODEL_NAME_OR_PATH,
+        lora_rank: int = DEFAULT_LORA_R,
+        modules_to_save: list[str] | None = None,
+    ):
         super().__init__()
         self.model_name_or_path = model_name_or_path
         self.lora_rank = lora_rank
+        self.modules_to_save = modules_to_save
         self.model = create_peft_medgemma_model(
             model_name_or_path=model_name_or_path,
             quantized=False,
             lora_rank=lora_rank,
+            modules_to_save=modules_to_save,
         )
 
     def forward(self, *args, **kwargs):

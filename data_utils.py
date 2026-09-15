@@ -22,12 +22,17 @@ from __future__ import annotations
 
 import os
 import random
+import re
 from collections import Counter
 from typing import Any
 from xml.sax.saxutils import escape
 
 DEFAULT_MODEL_NAME_OR_PATH = "google/medgemma-4b-it"
 DEFAULT_EVAL_DATASET_DIR = "CRC-VAL-HE-7K"
+DEFAULT_RNASEQ_DATA_DIR = "./data/rnaseq"
+DEFAULT_RNASEQ_EVAL_FILE = "./data/rnaseq/eval.json"
+TASK_HISTOPATHOLOGY = "histopathology"
+TASK_RNASEQ = "rnaseq"
 
 RAW_TISSUE_CODES = ["ADI", "BACK", "DEB", "LYM", "MUC", "MUS", "NORM", "STR", "TUM"]
 TISSUE_CLASSES = [
@@ -58,6 +63,16 @@ SVG_LABEL_COLORS = [
 
 PROMPT = "What is the most likely tissue type shown in the histopathology image?\n" + "\n".join(TISSUE_CLASSES)
 
+DIAGNOSIS_CLASSES = ["ALL", "AML", "CCSK", "MPAL", "NBL", "OS", "RT", "WT"]
+DIAGNOSIS_TO_INDEX = {name: idx for idx, name in enumerate(DIAGNOSIS_CLASSES)}
+RNASEQ_PROMPT_PREFIX = (
+    "You are a pediatric oncology assistant. Based on RNA-seq log2 TMM-normalized CPM values "
+    "for highly variable protein-coding genes, what is the most likely TARGET diagnosis?\n"
+    + "\n".join(DIAGNOSIS_CLASSES)
+    + "\n\nGene expression (gene_symbol\tlog2_TMM_CPM):\n"
+)
+RNASEQ_PROMPT_SUFFIX = "\n\nReply with only the diagnosis abbreviation."
+
 
 def _to_alt_tissue_label(label: str) -> str:
     code, description = label.split(": ", 1)
@@ -74,7 +89,48 @@ def resolve_image_path(image_path: str, image_root: str) -> str:
     return os.path.abspath(os.path.join(image_root, path))
 
 
+def is_rnaseq_example(example: dict[str, Any]) -> bool:
+    return "expression_text" in example or example.get("task") == TASK_RNASEQ
+
+
+def build_rnaseq_prompt(expression_text: str) -> str:
+    return f"{RNASEQ_PROMPT_PREFIX}{expression_text}{RNASEQ_PROMPT_SUFFIX}"
+
+
+def format_rnaseq_training_example(example: dict[str, Any]) -> dict[str, Any]:
+    label_name = example.get("label_name") or DIAGNOSIS_CLASSES[int(example["label"])]
+    formatted = dict(example)
+    formatted["task"] = TASK_RNASEQ
+    formatted["label_name"] = label_name
+    formatted["messages"] = [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": build_rnaseq_prompt(example["expression_text"])}],
+        },
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": label_name}],
+        },
+    ]
+    return formatted
+
+
+def format_rnaseq_inference_example(example: dict[str, Any]) -> dict[str, Any]:
+    formatted = dict(example)
+    formatted["task"] = TASK_RNASEQ
+    formatted["messages"] = [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": build_rnaseq_prompt(example["expression_text"])}],
+        }
+    ]
+    return formatted
+
+
 def format_training_example(example: dict[str, Any]) -> dict[str, Any]:
+    if is_rnaseq_example(example):
+        return format_rnaseq_training_example(example)
+
     label_name = example.get("label_name") or TISSUE_CLASSES[int(example["label"])]
     formatted = dict(example)
     formatted["label_name"] = label_name
@@ -97,6 +153,9 @@ def format_training_example(example: dict[str, Any]) -> dict[str, Any]:
 
 
 def format_inference_example(example: dict[str, Any]) -> dict[str, Any]:
+    if is_rnaseq_example(example):
+        return format_rnaseq_inference_example(example)
+
     formatted = dict(example)
     formatted["messages"] = [
         {
@@ -114,6 +173,15 @@ def parse_prediction_label(response_text: str) -> int:
     for label_index, label_name in enumerate(TISSUE_CLASSES):
         if label_name in response_text or ALT_TISSUE_LABELS[label_name] in response_text:
             return label_index
+    return -1
+
+
+def parse_diagnosis_label(response_text: str) -> int:
+    text = response_text.upper()
+    ranked = sorted(DIAGNOSIS_CLASSES, key=len, reverse=True)
+    for name in ranked:
+        if re.search(rf"\b{re.escape(name)}\b", text):
+            return DIAGNOSIS_TO_INDEX[name]
     return -1
 
 
@@ -316,28 +384,42 @@ def _split_records_heterogeneous(
     return site_splits
 
 
-def summarize_label_distribution(records: list[dict[str, Any]]) -> list[str]:
+def summarize_label_distribution(
+    records: list[dict[str, Any]], class_names: list[str] | None = None
+) -> list[str]:
+    names = class_names or TISSUE_CLASSES
     counts = Counter(int(record["label"]) for record in records)
-    return [f"{TISSUE_CLASSES[label_idx]}={counts.get(label_idx, 0)}" for label_idx in range(len(TISSUE_CLASSES))]
+    return [f"{names[label_idx]}={counts.get(label_idx, 0)}" for label_idx in range(len(names))]
 
 
-def _label_count_vector(records: list[dict[str, Any]]) -> list[int]:
+def _label_count_vector(records: list[dict[str, Any]], class_names: list[str] | None = None) -> list[int]:
+    names = class_names or TISSUE_CLASSES
     counts = Counter(int(record["label"]) for record in records)
-    return [counts.get(label_idx, 0) for label_idx in range(len(TISSUE_CLASSES))]
+    return [counts.get(label_idx, 0) for label_idx in range(len(names))]
 
 
-def write_label_distribution_svg(site_splits: dict[str, dict[str, list[dict[str, Any]]]], output_path: str) -> None:
+def write_label_distribution_svg(
+    site_splits: dict[str, dict[str, list[dict[str, Any]]]],
+    output_path: str,
+    *,
+    class_names: list[str] | None = None,
+    title: str = "Client Train Label Distribution",
+    subtitle: str | None = None,
+) -> None:
+    names = class_names or TISSUE_CLASSES
     site_names = sorted(site_splits)
-    label_count_vectors = {site_name: _label_count_vector(site_splits[site_name]["train"]) for site_name in site_names}
+    label_count_vectors = {
+        site_name: _label_count_vector(site_splits[site_name]["train"], class_names=names) for site_name in site_names
+    }
     max_count = max((max(counts) for counts in label_count_vectors.values()), default=1)
     max_count = max(max_count, 1)
 
     width = 980
-    top_margin = 28
+    top_margin = 48 if subtitle else 28
     panel_title_height = 52
     row_height = 28
     panel_gap = 22
-    panel_height = panel_title_height + len(TISSUE_CLASSES) * row_height + 30
+    panel_height = panel_title_height + len(names) * row_height + 30
     height = top_margin + len(site_names) * panel_height + max(0, len(site_names) - 1) * panel_gap + 28
 
     label_x = 32
@@ -350,13 +432,18 @@ def write_label_distribution_svg(site_splits: dict[str, dict[str, list[dict[str,
         '<?xml version="1.0" encoding="UTF-8"?>',
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
         f'viewBox="0 0 {width} {height}" role="img" aria-labelledby="title desc">',
-        '  <title id="title">MedGemma client train label distribution</title>',
-        '  <desc id="desc">Per-client training-label distribution for the heterogeneous MedGemma split.</desc>',
+        f'  <title id="title">{escape(title)}</title>',
+        '  <desc id="desc">Per-client training-label distribution for federated MedGemma splits.</desc>',
         '  <rect width="100%" height="100%" fill="#FFFDF8"/>',
         '  <text x="32" y="26" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#1F2933">'
-        "Client Train Label Distribution"
+        f"{escape(title)}"
         "</text>",
     ]
+    if subtitle:
+        lines.append(
+            f'  <text x="32" y="44" font-family="Arial, sans-serif" font-size="12" fill="#486581">'
+            f"{escape(subtitle)}</text>"
+        )
 
     for site_idx, site_name in enumerate(site_names):
         split_data = site_splits[site_name]
@@ -376,7 +463,7 @@ def write_label_distribution_svg(site_splits: dict[str, dict[str, list[dict[str,
                 f'  <text x="150" y="{panel_top + 26}" font-family="Arial, sans-serif" font-size="12" fill="#486581">{escape(dominant_text)}</text>'
             )
 
-        for label_idx, label_name in enumerate(TISSUE_CLASSES):
+        for label_idx, label_name in enumerate(names):
             row_top = panel_top + panel_title_height + label_idx * row_height
             bar_length = 0 if max_count <= 0 else counts[label_idx] / max_count * bar_width
             bar_color = SVG_LABEL_COLORS[label_idx % len(SVG_LABEL_COLORS)]

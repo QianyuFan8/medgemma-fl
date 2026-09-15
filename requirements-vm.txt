@@ -1,6 +1,8 @@
-# Tested VM package versions; not a full dependency lock.
-# Install CUDA 12.6 PyTorch wheels first.
--r requirements.txt
+# Tested CUDA VM versions. Do not include requirements.txt here: it pins
+# torch==2.13.0 (no +cu126) and conflicts with the CUDA wheels below.
+#
+# Install with:
+#   python -m pip install --extra-index-url https://download.pytorch.org/whl/cu126 -r requirements-vm.txt
 
 nvflare==2.7.3
 torch==2.13.0+cu126

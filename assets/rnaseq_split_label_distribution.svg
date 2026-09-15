@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="1038" viewBox="0 0 980 1038" role="img" aria-labelledby="title desc">
+  <title id="title">TARGET RNA-seq client train diagnosis distribution</title>
+  <desc id="desc">Per-client training-label distribution for federated MedGemma splits.</desc>
+  <rect width="100%" height="100%" fill="#FFFDF8"/>
+  <text x="32" y="26" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#1F2933">TARGET RNA-seq client train diagnosis distribution</text>
+  <text x="32" y="44" font-family="Arial, sans-serif" font-size="12" fill="#486581">Batch-grouped sites: site-1 Batch01–03, site-2 Batch04–06, site-3 Batch07–09. Training samples only.</text>
+  <rect x="20" y="48" width="940" height="306" rx="14" fill="#FFFFFF" stroke="#D8DEE9"/>
+  <text x="36" y="74" font-family="Arial, sans-serif" font-size="17" font-weight="700" fill="#102A43">site-1</text>
+  <text x="150" y="74" font-family="Arial, sans-serif" font-size="12" fill="#486581">dominant: ALL, NBL</text>
+  <text x="32" y="115" font-family="Arial, sans-serif" font-size="12" fill="#243B53">ALL</text>
+  <rect x="322" y="104" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="104" width="470.0" height="14" rx="7" fill="#D1495B"/>
+  <text x="810" y="115" font-family="Arial, sans-serif" font-size="12" fill="#243B53">237</text>
+  <text x="32" y="143" font-family="Arial, sans-serif" font-size="12" fill="#243B53">AML</text>
+  <rect x="322" y="132" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="132" width="0.0" height="14" rx="7" fill="#EDA65D"/>
+  <text x="810" y="143" font-family="Arial, sans-serif" font-size="12" fill="#243B53">0</text>
+  <text x="32" y="171" font-family="Arial, sans-serif" font-size="12" fill="#243B53">CCSK</text>
+  <rect x="322" y="160" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="160" width="0.0" height="14" rx="7" fill="#F7DC6F"/>
+  <text x="810" y="171" font-family="Arial, sans-serif" font-size="12" fill="#243B53">0</text>
+  <text x="32" y="199" font-family="Arial, sans-serif" font-size="12" fill="#243B53">MPAL</text>
+  <rect x="322" y="188" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="188" width="4.0" height="14" rx="7" fill="#5DA271"/>
+  <text x="810" y="199" font-family="Arial, sans-serif" font-size="12" fill="#243B53">2</text>
+  <text x="32" y="227" font-family="Arial, sans-serif" font-size="12" fill="#243B53">NBL</text>
+  <rect x="322" y="216" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="216" width="232.0" height="14" rx="7" fill="#2E86AB"/>
+  <text x="810" y="227" font-family="Arial, sans-serif" font-size="12" fill="#243B53">117</text>
+  <text x="32" y="255" font-family="Arial, sans-serif" font-size="12" fill="#243B53">OS</text>
+  <rect x="322" y="244" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="244" width="119.0" height="14" rx="7" fill="#8E6C8A"/>
+  <text x="810" y="255" font-family="Arial, sans-serif" font-size="12" fill="#243B53">60</text>
+  <text x="32" y="283" font-family="Arial, sans-serif" font-size="12" fill="#243B53">RT</text>
+  <rect x="322" y="272" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="272" width="11.9" height="14" rx="7" fill="#556B2F"/>
+  <text x="810" y="283" font-family="Arial, sans-serif" font-size="12" fill="#243B53">6</text>
+  <text x="32" y="311" font-family="Arial, sans-serif" font-size="12" fill="#243B53">WT</text>
+  <rect x="322" y="300" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="300" width="2.0" height="14" rx="7" fill="#B56576"/>
+  <text x="810" y="311" font-family="Arial, sans-serif" font-size="12" fill="#243B53">1</text>
+  <rect x="20" y="376" width="940" height="306" rx="14" fill="#FFFFFF" stroke="#D8DEE9"/>
+  <text x="36" y="402" font-family="Arial, sans-serif" font-size="17" font-weight="700" fill="#102A43">site-2</text>
+  <text x="150" y="402" font-family="Arial, sans-serif" font-size="12" fill="#486581">dominant: ALL, MPAL</text>
+  <text x="32" y="443" font-family="Arial, sans-serif" font-size="12" fill="#243B53">ALL</text>
+  <rect x="322" y="432" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="432" width="273.7" height="14" rx="7" fill="#D1495B"/>
+  <text x="810" y="443" font-family="Arial, sans-serif" font-size="12" fill="#243B53">138</text>
+  <text x="32" y="471" font-family="Arial, sans-serif" font-size="12" fill="#243B53">AML</text>
+  <rect x="322" y="460" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="460" width="0.0" height="14" rx="7" fill="#EDA65D"/>
+  <text x="810" y="471" font-family="Arial, sans-serif" font-size="12" fill="#243B53">0</text>
+  <text x="32" y="499" font-family="Arial, sans-serif" font-size="12" fill="#243B53">CCSK</text>
+  <rect x="322" y="488" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="488" width="0.0" height="14" rx="7" fill="#F7DC6F"/>
+  <text x="810" y="499" font-family="Arial, sans-serif" font-size="12" fill="#243B53">0</text>
+  <text x="32" y="527" font-family="Arial, sans-serif" font-size="12" fill="#243B53">MPAL</text>
+  <rect x="322" y="516" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="516" width="111.1" height="14" rx="7" fill="#5DA271"/>
+  <text x="810" y="527" font-family="Arial, sans-serif" font-size="12" fill="#243B53">56</text>
+  <text x="32" y="555" font-family="Arial, sans-serif" font-size="12" fill="#243B53">NBL</text>
+  <rect x="322" y="544" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="544" width="0.0" height="14" rx="7" fill="#2E86AB"/>
+  <text x="810" y="555" font-family="Arial, sans-serif" font-size="12" fill="#243B53">0</text>
+  <text x="32" y="583" font-family="Arial, sans-serif" font-size="12" fill="#243B53">OS</text>
+  <rect x="322" y="572" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="572" width="0.0" height="14" rx="7" fill="#8E6C8A"/>
+  <text x="810" y="583" font-family="Arial, sans-serif" font-size="12" fill="#243B53">0</text>
+  <text x="32" y="611" font-family="Arial, sans-serif" font-size="12" fill="#243B53">RT</text>
+  <rect x="322" y="600" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="600" width="0.0" height="14" rx="7" fill="#556B2F"/>
+  <text x="810" y="611" font-family="Arial, sans-serif" font-size="12" fill="#243B53">0</text>
+  <text x="32" y="639" font-family="Arial, sans-serif" font-size="12" fill="#243B53">WT</text>
+  <rect x="322" y="628" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="628" width="0.0" height="14" rx="7" fill="#B56576"/>
+  <text x="810" y="639" font-family="Arial, sans-serif" font-size="12" fill="#243B53">0</text>
+  <rect x="20" y="704" width="940" height="306" rx="14" fill="#FFFFFF" stroke="#D8DEE9"/>
+  <text x="36" y="730" font-family="Arial, sans-serif" font-size="17" font-weight="700" fill="#102A43">site-3</text>
+  <text x="150" y="730" font-family="Arial, sans-serif" font-size="12" fill="#486581">dominant: RT, WT</text>
+  <text x="32" y="771" font-family="Arial, sans-serif" font-size="12" fill="#243B53">ALL</text>
+  <rect x="322" y="760" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="760" width="0.0" height="14" rx="7" fill="#D1495B"/>
+  <text x="810" y="771" font-family="Arial, sans-serif" font-size="12" fill="#243B53">0</text>
+  <text x="32" y="799" font-family="Arial, sans-serif" font-size="12" fill="#243B53">AML</text>
+  <rect x="322" y="788" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="788" width="19.8" height="14" rx="7" fill="#EDA65D"/>
+  <text x="810" y="799" font-family="Arial, sans-serif" font-size="12" fill="#243B53">10</text>
+  <text x="32" y="827" font-family="Arial, sans-serif" font-size="12" fill="#243B53">CCSK</text>
+  <rect x="322" y="816" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="816" width="21.8" height="14" rx="7" fill="#F7DC6F"/>
+  <text x="810" y="827" font-family="Arial, sans-serif" font-size="12" fill="#243B53">11</text>
+  <text x="32" y="855" font-family="Arial, sans-serif" font-size="12" fill="#243B53">MPAL</text>
+  <rect x="322" y="844" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="844" width="33.7" height="14" rx="7" fill="#5DA271"/>
+  <text x="810" y="855" font-family="Arial, sans-serif" font-size="12" fill="#243B53">17</text>
+  <text x="32" y="883" font-family="Arial, sans-serif" font-size="12" fill="#243B53">NBL</text>
+  <rect x="322" y="872" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="872" width="0.0" height="14" rx="7" fill="#2E86AB"/>
+  <text x="810" y="883" font-family="Arial, sans-serif" font-size="12" fill="#243B53">0</text>
+  <text x="32" y="911" font-family="Arial, sans-serif" font-size="12" fill="#243B53">OS</text>
+  <rect x="322" y="900" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="900" width="0.0" height="14" rx="7" fill="#8E6C8A"/>
+  <text x="810" y="911" font-family="Arial, sans-serif" font-size="12" fill="#243B53">0</text>
+  <text x="32" y="939" font-family="Arial, sans-serif" font-size="12" fill="#243B53">RT</text>
+  <rect x="322" y="928" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="928" width="85.3" height="14" rx="7" fill="#556B2F"/>
+  <text x="810" y="939" font-family="Arial, sans-serif" font-size="12" fill="#243B53">43</text>
+  <text x="32" y="967" font-family="Arial, sans-serif" font-size="12" fill="#243B53">WT</text>
+  <rect x="322" y="956" width="470" height="14" rx="7" fill="#E5E7EB"/>
+  <rect x="322" y="956" width="188.4" height="14" rx="7" fill="#B56576"/>
+  <text x="810" y="967" font-family="Arial, sans-serif" font-size="12" fill="#243B53">95</text>
+</svg>

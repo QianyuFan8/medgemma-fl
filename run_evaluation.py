@@ -21,11 +21,19 @@ https://github.com/google-health/medgemma/blob/main/notebooks/fine_tune_with_hug
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
-from data_utils import DEFAULT_EVAL_DATASET_DIR, DEFAULT_MODEL_NAME_OR_PATH, collect_image_records, sample_records
-from inference_utils import load_model_and_processor, predict_labels
+from data_utils import (
+    DEFAULT_EVAL_DATASET_DIR,
+    DEFAULT_MODEL_NAME_OR_PATH,
+    DEFAULT_RNASEQ_EVAL_FILE,
+    TASK_RNASEQ,
+    collect_image_records,
+    sample_records,
+)
+from inference_utils import load_model_and_processor, predict_diagnosis_labels, predict_labels
 from PIL import Image
 
 
@@ -116,8 +124,78 @@ def _evaluate_model(
     return metrics
 
 
+def _evaluate_rnaseq_model(
+    label: str,
+    model_path: str,
+    base_model: str,
+    device: str,
+    records: list[dict],
+    max_new_tokens: int,
+    show_examples: int,
+    progress_interval: int,
+    batch_size: int,
+) -> dict:
+    _log_progress(f"\nEvaluating {label}: {model_path}")
+    model, processor = load_model_and_processor(model_path=model_path, base_model=base_model, device=device)
+
+    predictions = []
+    references = []
+    correct = 0
+    unparsed = 0
+    total = len(records)
+    progress_interval = max(1, progress_interval)
+    batch_size = max(1, batch_size)
+
+    for start_idx in range(0, total, batch_size):
+        batch_records = records[start_idx : start_idx + batch_size]
+        batch_results = predict_diagnosis_labels(
+            model=model,
+            processor=processor,
+            expression_texts=[record["expression_text"] for record in batch_records],
+            max_new_tokens=max_new_tokens,
+        )
+        for offset, (record, (response_text, predicted_index, predicted_label)) in enumerate(
+            zip(batch_records, batch_results),
+            start=1,
+        ):
+            idx = start_idx + offset
+            predictions.append(predicted_index)
+            references.append(record["label"])
+            if predicted_index == record["label"]:
+                correct += 1
+            if predicted_index < 0:
+                unparsed += 1
+            if idx <= show_examples:
+                print(f"--- {label} sample {idx} ---")
+                print(f"Ground truth: {record['label_name']}")
+                print(f"Prediction:   {predicted_label}")
+                print(f"Raw output:   {response_text[:240]}{'...' if len(response_text) > 240 else ''}")
+            if idx == 1 or idx == total or idx % progress_interval == 0:
+                _log_progress(
+                    f"{label} progress: {idx}/{total} ({100.0 * idx / total:.1f}%) "
+                    f"correct_so_far={correct} unparsed={unparsed}"
+                )
+
+    metrics = _compute_accuracy(predictions=predictions, references=references)
+    metrics["unparsed"] = unparsed
+    return metrics
+
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate MedGemma accuracy before and after fine-tuning.")
+    parser.add_argument(
+        "--task",
+        type=str,
+        choices=("histopathology", "rnaseq"),
+        default="histopathology",
+        help="Evaluation task (default: histopathology).",
+    )
+    parser.add_argument(
+        "--eval_file",
+        type=str,
+        default=DEFAULT_RNASEQ_EVAL_FILE,
+        help="Prepared RNA-seq eval.json used when --task rnaseq.",
+    )
     parser.add_argument(
         "--dataset_dir",
         type=str,
@@ -181,26 +259,43 @@ def main():
     )
     args = parser.parse_args()
 
-    dataset_dir = _abs_path(args.dataset_dir)
-    if not os.path.isdir(dataset_dir):
-        raise FileNotFoundError(
-            f"Evaluation dataset not found: {dataset_dir}. "
-            "Download CRC-VAL-HE-7K first, for example via `python download_data.py --include_eval`."
+    if args.task == TASK_RNASEQ:
+        eval_file = _abs_path(args.eval_file)
+        if not os.path.isfile(eval_file):
+            raise FileNotFoundError(f"RNA-seq eval file not found: {eval_file}. Run prepare_rnaseq.py first.")
+        with open(eval_file, encoding="utf-8") as handle:
+            records = json.load(handle)
+        records = sample_records(records, max_samples=args.max_samples, seed=args.seed)
+        if not records:
+            print("No evaluation samples found.")
+            return 1
+        print(f"Using {len(records)} RNA-seq evaluation sample(s) from {eval_file}")
+        evaluate_fn = lambda label, model_path: _evaluate_rnaseq_model(
+            label=label,
+            model_path=model_path,
+            base_model=args.base_model,
+            device=args.device,
+            records=records,
+            max_new_tokens=args.max_new_tokens,
+            show_examples=args.show_examples,
+            progress_interval=args.progress_interval,
+            batch_size=args.batch_size,
         )
-
-    records = _load_eval_records(dataset_dir=dataset_dir, max_samples=args.max_samples, seed=args.seed)
-    if not records:
-        print("No evaluation samples found.")
-        return 1
-    print(f"Using {len(records)} evaluation sample(s) from {dataset_dir}")
-
-    base_metrics = None
-    if args.finetune_only:
-        print("Skipping base model evaluation (--finetune_only).")
     else:
-        base_metrics = _evaluate_model(
-            label="Base model",
-            model_path=args.base_model_path,
+        dataset_dir = _abs_path(args.dataset_dir)
+        if not os.path.isdir(dataset_dir):
+            raise FileNotFoundError(
+                f"Evaluation dataset not found: {dataset_dir}. "
+                "Download CRC-VAL-HE-7K first, for example via `python download_data.py --include_eval`."
+            )
+        records = _load_eval_records(dataset_dir=dataset_dir, max_samples=args.max_samples, seed=args.seed)
+        if not records:
+            print("No evaluation samples found.")
+            return 1
+        print(f"Using {len(records)} evaluation sample(s) from {dataset_dir}")
+        evaluate_fn = lambda label, model_path: _evaluate_model(
+            label=label,
+            model_path=model_path,
             base_model=args.base_model,
             dataset_dir=dataset_dir,
             device=args.device,
@@ -210,18 +305,13 @@ def main():
             progress_interval=args.progress_interval,
             batch_size=args.batch_size,
         )
-    tuned_metrics = _evaluate_model(
-        label="Fine-tuned model",
-        model_path=args.tuned_model_path,
-        base_model=args.base_model,
-        dataset_dir=dataset_dir,
-        device=args.device,
-        records=records,
-        max_new_tokens=args.max_new_tokens,
-        show_examples=args.show_examples,
-        progress_interval=args.progress_interval,
-        batch_size=args.batch_size,
-    )
+
+    base_metrics = None
+    if args.finetune_only:
+        print("Skipping base model evaluation (--finetune_only).")
+    else:
+        base_metrics = evaluate_fn("Base model", args.base_model_path)
+    tuned_metrics = evaluate_fn("Fine-tuned model", args.tuned_model_path)
 
     print("\nAccuracy summary")
     if base_metrics is not None:

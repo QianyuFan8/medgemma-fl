@@ -9,10 +9,19 @@ data/.DS_Store
 .DS_Store
 target_data/processed/*.parquet
 
+# TARGET RNA-seq raw counts/TPM (multi-GB). Do not upload to GitHub.
+/RNAseq/
+
+# Adapter checkpoints (tens of MB); keep study JSON/SVG under results/
+*_FL_global_model.pt
+*.pt
+
 # Local environment and generated files
 /.venv/
 /data/
 /logs/
+/comm_logs/
+/comm_logs_*/
 /runs/
 __pycache__/
 *.py[cod]

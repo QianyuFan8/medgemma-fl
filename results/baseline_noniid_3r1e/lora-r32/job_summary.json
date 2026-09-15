@@ -1,0 +1,10 @@
+{
+  "name": "lora-r32",
+  "rank": 32,
+  "quantized": false,
+  "bytes_per_round": 1847894016.0,
+  "local_accuracy": 0.5623491654347195,
+  "accuracy": 0.4364,
+  "global_model": "/tmp/nvflare/simulation/lora-r32/server/simulate_job/app_server/FL_global_model.pt",
+  "comm_log_dir": "/home/ubuntu/medgemma-fl/comm_logs/lora-r32"
+}

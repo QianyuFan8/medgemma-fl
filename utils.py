@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import gc
+import json
 import os
 
 import torch
@@ -24,16 +25,33 @@ def abs_path(path: str) -> str:
     return os.path.abspath(os.path.expanduser(path))
 
 
-def params_size_mb(params) -> float:
+def params_size_bytes(params) -> int:
     if not params:
-        return 0.0
+        return 0
     nbytes = 0
     for value in params.values():
         if isinstance(value, torch.Tensor):
-            nbytes += value.numel() * value.element_size()
+            nbytes += int(value.numel() * value.element_size())
         elif hasattr(value, "nbytes"):
-            nbytes += value.nbytes
-    return nbytes / (1024.0 * 1024.0)
+            nbytes += int(value.nbytes)
+    return nbytes
+
+
+def params_size_mb(params) -> float:
+    return params_size_bytes(params) / (1024.0 * 1024.0)
+
+
+def lora_factor_params(params) -> dict:
+    if not params:
+        return {}
+    return {key: value for key, value in params.items() if ".lora_A." in key or ".lora_B." in key}
+
+
+def append_jsonl(path: str, record: dict) -> None:
+    path = os.path.abspath(os.path.expanduser(path))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record) + "\n")
 
 
 def free_memory() -> None:

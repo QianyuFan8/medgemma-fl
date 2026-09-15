@@ -23,10 +23,19 @@ from __future__ import annotations
 import os
 
 import torch
-from data_utils import DEFAULT_MODEL_NAME_OR_PATH, PROMPT, TISSUE_CLASSES, parse_prediction_label
+from data_utils import (
+    DEFAULT_MODEL_NAME_OR_PATH,
+    DIAGNOSIS_CLASSES,
+    PROMPT,
+    TISSUE_CLASSES,
+    build_rnaseq_prompt,
+    parse_diagnosis_label,
+    parse_prediction_label,
+)
 from model import (
     apply_adapter_state,
     create_peft_medgemma_model,
+    infer_modules_to_save_from_state_dict,
     infer_uniform_lora_rank_from_state_dict,
     load_medgemma_base_model,
 )
@@ -73,12 +82,14 @@ def load_model_and_processor(
         print(f"Loading NVFlare global adapter weights from: {model_path}")
         adapter_state = load_nvflare_global_pt(model_path)
         lora_rank = infer_uniform_lora_rank_from_state_dict(adapter_state)
+        modules_to_save = infer_modules_to_save_from_state_dict(adapter_state)
         print(f"Inferred global LoRA rank from checkpoint: {lora_rank}")
         model = create_peft_medgemma_model(
             base_model,
             quantized=quantized,
             device_map=device_map,
             lora_rank=lora_rank,
+            modules_to_save=modules_to_save,
         )
         apply_adapter_state(model, adapter_state)
     elif os.path.isdir(model_path) and os.path.isfile(os.path.join(model_path, "adapter_config.json")):
@@ -151,3 +162,30 @@ def predict_labels(model, processor, images: list, max_new_tokens: int) -> list[
 
 def predict_label(model, processor, image, max_new_tokens: int) -> tuple[str, int, str]:
     return predict_labels(model, processor, [image], max_new_tokens)[0]
+
+
+def generate_text_response_texts(model, processor, prompts: list[str], max_new_tokens: int) -> list[str]:
+    tokenizer = processor.tokenizer
+    device = get_model_device(model)
+    texts = []
+    for prompt in prompts:
+        messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+        texts.append(processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False).strip())
+    inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=4096)
+    inputs = {key: value.to(device) for key, value in inputs.items()}
+    prompt_length = inputs["input_ids"].shape[1]
+    with torch.inference_mode():
+        output_ids = model.generate(**inputs, max_new_tokens=max_new_tokens)
+    generated_ids = output_ids[:, prompt_length:]
+    return [text.strip() for text in tokenizer.batch_decode(generated_ids, skip_special_tokens=True)]
+
+
+def predict_diagnosis_labels(model, processor, expression_texts: list[str], max_new_tokens: int) -> list[tuple[str, int, str]]:
+    prompts = [build_rnaseq_prompt(text) for text in expression_texts]
+    responses = generate_text_response_texts(model, processor, prompts, max_new_tokens)
+    results = []
+    for response_text in responses:
+        predicted_index = parse_diagnosis_label(response_text)
+        predicted_label = DIAGNOSIS_CLASSES[predicted_index] if predicted_index >= 0 else "<unparsed>"
+        results.append((response_text, predicted_index, predicted_label))
+    return results
