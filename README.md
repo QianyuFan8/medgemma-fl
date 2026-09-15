@@ -4,18 +4,11 @@ MedGemma-FL is a research project exploring federated fine-tuning of MedGemma wi
 
 ## Project status
 
-- **Current baseline (`main`):** runnable federated MedGemma fine-tuning based on the NVIDIA FLARE MedGemma example, with histopathology tissue classification as the current demonstration task.
-- **Planned work:** Gemma Scope 2 interpretability and auditing experiments, along with downstream pediatric oncology clinical trial matching.
+- **This branch (`feat/rnaseq-fl-comm-study`):** TARGET RNA-seq diagnosis classification with 3-site FedAvg LoRA/QLoRA, TMM–CPM text prompts, per-round byte logging, and a communication-vs-accuracy study.
+- **`main`:** runnable federated MedGemma fine-tuning on NCT-CRC-HE-100K histopathology (kept below as the original demonstration).
+- **Planned next:** class-balanced local SFT with more FL rounds / local epochs on the current non-IID split, then an IID comparison. Gemma Scope 2 interpretability and clinical trial matching are not in the runnable path yet.
 
-We plan to explore Gemma Scope 2 as an interpretability and auditing layer to examine model behavior across federated rounds and during downstream clinical trial matching. Gemma Scope 2 integration and clinical trial matching are not yet part of the runnable baseline.
-
-## Federated MedGemma baseline
-
-This example adapts Google's centralized [MedGemma fine-tuning notebook](https://github.com/google-health/medgemma/blob/main/notebooks/fine_tune_with_hugging_face.ipynb) into an NVFlare federated workflow. It fine-tunes [MedGemma 4B IT](https://huggingface.co/google/medgemma-4b-it) on the [NCT-CRC-HE-100K](https://zenodo.org/records/1214456) histopathology dataset using Hugging Face `TRL`, [QLoRA](https://arxiv.org/abs/2305.14314), and FedAvg across 3 clients.
-
-The example is self-contained: data download/prep scripts live next to the FL client, model wrapper, and job recipe.
-
-The fine-tuning data follows the official notebook's setup: [NCT-CRC-HE-100K](https://zenodo.org/records/1214456), a dataset of histopathology image patches from human colorectal cancer and normal tissue. The downstream task is a vision classification task framed as multimodal instruction tuning: for each image patch, the model is prompted with a multiple-choice tissue-type question and learns to generate one of nine labels (`adipose`, `background`, `debris`, `lymphocytes`, `mucus`, `smooth muscle`, `normal colon mucosa`, `cancer-associated stroma`, or `colorectal adenocarcinoma epithelium`).
+We plan to explore Gemma Scope 2 as an interpretability and auditing layer across federated rounds. That work is not part of the current RNA-seq or histopathology baselines.
 
 ## Before you start: Hugging Face gated model
 
@@ -24,23 +17,129 @@ Weights for [`google/medgemma-4b-it`](https://huggingface.co/google/medgemma-4b-
 1. Sign in at [huggingface.co](https://huggingface.co) and open [`google/medgemma-4b-it`](https://huggingface.co/google/medgemma-4b-it).
 2. On the model page, follow **Access MedGemma on Hugging Face**: review and agree to the **Health AI Developer Foundations** terms so your account is authorized (this is often instant after you accept).
 3. If you see an error such as *access is restricted and you are not in the authorized list*, you are not allowlisted yet—repeat the access step on the model page while logged into the correct account, or wait if access is pending.
-4. On every machine that downloads or trains the model, use that **same** Hugging Face account: run `huggingface-cli login` or set the `HF_TOKEN` environment variable.
+4. On every machine that downloads or trains the model, use that **same** Hugging Face account: run `hf auth login` or set the `HF_TOKEN` environment variable.
+
+## TARGET RNA-seq communication study
+
+This branch fine-tunes MedGemma **text-only** on TARGET diagnosis (`Dx`) labels. Each sample is a prompt with 200 highly variable genes after edgeR-style **TMM** normalization and **log2(CPM+1)**. Federated clients exchange **LoRA A/B factors only** (`modules_to_save` is empty) so bytes-per-round tracks adapter rank, not the frozen 4B base model.
+
+Raw count/TPM matrices are **not** in this repository (multi-GB; see `.gitignore` `/RNAseq/`). Adapter checkpoints (`*.pt`) are also ignored. Small study logs and plots for the first non-IID run live under `results/baseline_noniid_3r1e/`.
+
+### Local raw data (not uploaded)
+
+Place Washington University TARGET batch matrices and metadata on the machine (not GitHub):
+
+```text
+RNAseq/TARGET_meta.txt
+RNAseq/WU-TARGET-Batch01-STRANDED_RSEM_gene_count.*.txt
+...
+RNAseq/WU-TARGET-Batch09-STRANDED_RSEM_gene_count.*.txt
+```
+
+`prepare_rnaseq.py` merges **stranded** Batch01–09, then fills missing samples from **unstranded** tables when present. Unlabeled `WU-TARGET_AML_B*` files are skipped. Metadata columns required: `Sample`, `Dx`.
+
+### Preprocess and 3-site split
+
+```bash
+python prepare_rnaseq.py --input_dir ./RNAseq --output_dir ./data/rnaseq
+```
+
+Default **non-IID** split groups sequencing batches (a site proxy):
+
+| Client | Batches | Role |
+|--------|---------|------|
+| `site-1` | B01–B03 | local train/val |
+| `site-2` | B04–B06 | local train/val |
+| `site-3` | B07–B09 | local train/val |
+| `eval.json` | held-out patients | global Dx accuracy |
+
+Eight diagnosis classes: ALL, AML, mixed-phenotype acute leukemia (MPAL), neuroblastoma (NBL), osteosarcoma (OS), Wilms tumor (WT), clear cell sarcoma of kidney (CCSK), rhabdoid tumor (RT). `--split_strategy random` writes an IID layout (use a **different** `--output_dir`, e.g. `./data/rnaseq-iid`, so the batch split is not overwritten).
+
+![TARGET RNA-seq client train diagnosis distribution](assets/rnaseq_split_label_distribution.svg)
+
+### Baseline experiment (archived)
+
+Protocol for `results/baseline_noniid_3r1e/`:
+
+| Setting | Value |
+|---------|--------|
+| Clients | 3 |
+| FL rounds | 3 |
+| Local epochs / round | 1 |
+| Class balancing | off |
+| LoRA | homogeneous r ∈ {4, 8, 16, 32}, bf16, `--no-quantized` |
+| QLoRA | r=16, 4-bit |
+| Aggregation | FedAvg, naive A/B averaging |
+| Extra PEFT modules | none |
+| Global eval | patient-held-out `eval.json` (165 samples) |
+| Majority-class floor | ALL 72/165 = **0.4364** |
+
+Global generation accuracy after 3 rounds:
+
+| Run | Bytes / round (approx.) | Global Dx accuracy |
+|-----|-------------------------|--------------------|
+| LoRA r=4 | 231 MB | 0.4364 |
+| LoRA r=8 | 462 MB | 0.4364 |
+| LoRA r=16 | 924 MB | 0.4364 |
+| LoRA r=32 | 1.85 GB | 0.4364 |
+| QLoRA r=16 | 462 MB | **0.5152** |
+
+![Accuracy vs bytes per round](results/baseline_noniid_3r1e/accuracy_vs_bytes.svg)
+
+All LoRA ranks collapsed to the ALL majority baseline on the **global** eval set. Local validation accuracy was higher (~0.50–0.62). Site-3 training data contains **no ALL**, so this snapshot does **not** answer non-IID vs IID vs centralized. Use a new `--comm_log_root` for later runs; do not overwrite `results/baseline_noniid_3r1e/`.
+
+### Reproduce the study
+
+After preprocess and `hf auth login` (or `HF_TOKEN`):
+
+```bash
+python run_comm_study.py \
+  --experiments lora-r4,lora-r8,lora-r16,lora-r32,qlora-r16 \
+  --num_rounds 3 \
+  --comm_log_root ./comm_logs \
+  --gpu "[0],[1],[2]"
+```
+
+Single job (QLoRA example):
+
+```bash
+python job.py --task rnaseq --data_dir ./data/rnaseq --num_rounds 3 \
+  --global_lora_rank 16 --site_lora_ranks 16,16,16 --quantized \
+  --modules_to_save "" --comm_log_dir ./comm_logs/qlora-r16 \
+  --experiment_name qlora-r16 --gpu "[0],[1],[2]"
+```
+
+Evaluate a saved global adapter on the held-out patients:
+
+```bash
+python run_evaluation.py --task rnaseq \
+  --eval_file ./data/rnaseq/eval.json \
+  --tuned_model_path /tmp/nvflare/simulation/qlora-r16/server/simulate_job/app_server/FL_global_model.pt \
+  --finetune_only --max_samples 0
+```
+
+Next protocol (does not replace the archived baseline): `--balance_labels`, `--num_rounds 8`, `--num_train_epochs 2`, a new `--comm_log_root` and `--name_suffix` so simulator job names do not collide. IID comparison comes **after** that non-IID rerun.
+
+Step-by-step NVIDIA Brev login, copy, train, eval, and `brev stop`: [docs/brev-rnaseq.md](docs/brev-rnaseq.md).
 
 ## Code structure
 
 | File | Role |
 |------|------|
-| `data_utils.py` | Shared prompt, class-label mappings, dataset splitting helpers, and response parsing helpers. |
+| `prepare_rnaseq.py` | Merge TARGET batch counts, TMM–CPM, HVG text prompts, 3-site JSON shards and `eval.json`. |
+| `run_comm_study.py` | Homogeneous-rank LoRA/QLoRA job loop, JSONL summary, accuracy-vs-bytes plot. |
+| `plot_comm_study.py` | Log-x accuracy vs bytes-per-round SVG. |
+| `data_utils.py` | Shared prompt, class-label mappings (tissue and diagnosis), dataset helpers, response parsing, label-distribution SVG. |
 | `lora_utils.py` | Shared LoRA key, rank, and truncation helpers used by the client and custom aggregators. |
-| `utils.py` | Shared path, memory, and CUDA runtime helpers used by the client. |
+| `utils.py` | Shared path, memory, CUDA, and JSONL communication-log helpers. |
 | `model.py` | MedGemma LoRA wrapper used by the server and clients. The server stores a fixed-rank global LoRA bank and exchanges only adapter weights. |
-| `client.py` | NVFlare client entry point. Loads MedGemma in 4-bit, truncates the incoming global LoRA bank to the site's local rank, runs local SFT with `SFTTrainer`, and sends back only the active local factors. |
+| `client.py` | NVFlare client entry point. Optional 4-bit QLoRA, optional in-site label oversampling, local SFT, LoRA-only uplink, per-round byte/accuracy JSONL. |
 | `custom_aggregators.py` | Server-side max-rank LoRA aggregators for the paper baseline (`naive`) and HLoRA (`hlora`). |
-| `job.py` | FedAvg recipe for 3 clients with per-site data paths, configurable local/global LoRA ranks, and selectable LoRA aggregation (`naive` or `hlora`). |
+| `job.py` | FedAvg recipe: `--task histopathology` or `rnaseq`, configurable rounds/epochs, ranks, quantization, and `--balance_labels`. |
 | `download_data.py` | Downloads and extracts `NCT-CRC-HE-100K.zip` from Zenodo. |
-| `prepare_data.py` | Discovers image files, builds class-skewed site shards by default, and writes `train.json` / `validation.json` for each client. |
-| `run_inference.py` | Runs before/after inference on prepared validation samples using either the base model, an adapter directory, or NVFlare `FL_global_model.pt`. |
-| `run_evaluation.py` | Evaluates base vs fine-tuned accuracy on `CRC-VAL-HE-7K`, following the MedGemma notebook's evaluation setup. |
+| `prepare_data.py` | Discovers histopathology image files, builds class-skewed site shards by default, and writes `train.json` / `validation.json` for each client. |
+| `run_inference.py` | Runs before/after inference on prepared histopathology validation samples. |
+| `run_evaluation.py` | Accuracy for CRC-VAL-HE-7K or RNA-seq `eval.json` (`--task rnaseq`). |
 
 ## Prerequisites
 
@@ -58,6 +157,14 @@ source .venv/bin/activate
 python -m pip install -U pip
 python -m pip install -r requirements.txt
 ```
+
+On a CUDA VM, prefer `requirements-vm.txt` (do not also install `requirements.txt` in the same env; that can pull a CPU PyTorch wheel).
+
+## Histopathology demonstration (original `main` baseline)
+
+This example adapts Google's centralized [MedGemma fine-tuning notebook](https://github.com/google-health/medgemma/blob/main/notebooks/fine_tune_with_hugging_face.ipynb) into an NVFlare federated workflow. It fine-tunes [MedGemma 4B IT](https://huggingface.co/google/medgemma-4b-it) on the [NCT-CRC-HE-100K](https://zenodo.org/records/1214456) histopathology dataset using Hugging Face `TRL`, [QLoRA](https://arxiv.org/abs/2305.14314), and FedAvg across 3 clients.
+
+The downstream task is multimodal instruction tuning: for each image patch, the model is prompted with a multiple-choice tissue-type question and learns to generate one of nine labels (`adipose`, `background`, `debris`, `lymphocytes`, `mucus`, `smooth muscle`, `normal colon mucosa`, `cancer-associated stroma`, or `colorectal adenocarcinoma epithelium`).
 
 ## 2. Download and prepare data
 
@@ -266,5 +373,6 @@ Useful flags:
 - Official centralized baseline: [fine_tune_with_hugging_face.ipynb](https://github.com/google-health/medgemma/blob/main/notebooks/fine_tune_with_hugging_face.ipynb)
 - MedGemma model: [google/medgemma-4b-it](https://huggingface.co/google/medgemma-4b-it)
 - Training data: [NCT-CRC-HE-100K on Zenodo](https://zenodo.org/records/1214456)
+- TARGET pediatric RNA-seq batches and diagnosis metadata (local `RNAseq/`; not redistributed in this repo)
 - Heterogeneous LoRA reference: [Heterogeneous LoRA for Federated Fine-tuning of On-Device Foundation Models (HetLoRA)](https://research.google/pubs/heterogeneous-lora-for-federated-fine-tuning-of-on-device-foundation-models/)
 - HLoRA reference: [HLoRA: Towards Efficient Federated Fine-Tuning of Large Language Models with Heterogeneous LoRA](https://arxiv.org/abs/2503.00813)
