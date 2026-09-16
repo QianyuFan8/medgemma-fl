@@ -1,9 +1,114 @@
 # Scope 2: fixed-sample MedGemma diagnostics
 
-This branch adds an offline experiment to the existing CRC histopathology task:
+This branch adds offline experiments to the existing CRC histopathology task:
 apply one frozen Gemma Scope 2 SAE to the same inputs before and after federated
-fine-tuning. The implementation is ready for a VM smoke test; real MedGemma/SAE
-compatibility and medical feature interpretations have **not** been validated.
+fine-tuning. The initial 20-image VM smoke test completed. This establishes that
+the computation runs, not that SAE transfer or medical interpretations are valid.
+Class association and ranking experiments are described below.
+
+## Class association and ranking (steps 1 + 2)
+
+Use the existing checkpoint; no new training or Gemma 3 control is required.
+On the VM, after pulling this branch and activating the existing `.venv`:
+
+```bash
+python -m pip install -r requirements-scope2.txt
+
+set -o pipefail
+mkdir -p logs
+python -u run_scope2_analysis.py \
+  --dataset_dir ./CRC-VAL-HE-7K \
+  --tuned_model_path ./runs/smoke-two-clients/medgemma/server/simulate_job/app_server/FL_global_model.pt \
+  --samples_per_class 20 \
+  --feature_top_k 10 \
+  --seed 42 \
+  --output_dir ./runs/scope2-classes-20 \
+  2>&1 | tee logs/scope2-classes-20.log
+```
+
+This selects **180 images: 20 from each of nine classes**, without replacement.
+Each image is still an independent model input. The true label is used only to
+select samples and group extracted features; it is not added to the prompt.
+Images are shuffled deterministically, hashed and saved in `samples.json`, and
+both models receive exactly the same processed inputs. An insufficient class
+causes an error before model loading; the sampler does not duplicate images or
+silently reduce the requested count. The output directory must be new.
+
+`--samples_per_class`, `--max_samples` and `--manifest` are alternative selection
+options. For subsequent checkpoints, replace `--samples_per_class 20` with
+`--manifest ./runs/scope2-classes-20/samples.json` to reuse the exact image set.
+Also pin `--sae_revision` to the earlier run's recorded commit when comparing runs.
+The original `--max_samples 20` smoke mode remains available. If a manifest lacks
+at least two samples in each of the nine classes, class analysis is explicitly
+skipped; the original paired comparison and global Top K still run.
+
+The plotting dependency is isolated in `requirements-scope2.txt`; installing it
+does not request an upgrade/reinstall of the training requirements. Missing
+plotting support is detected before loading language models. Heatmaps are saved
+as standalone PNG and SVG files and do not require a display on the VM.
+
+### New results to read
+
+| File | Meaning |
+| --- | --- |
+| `top_feature_changes.csv` | Global Top 10 by mean absolute paired change; includes signed change, means and activation frequencies. |
+| `class_top_features.csv` | Up to 10 positively associated features per true class **for each model**, with the scores below and links to global change ranks. |
+| `class_feature_summary.csv` | Full class statistics for every feature active in either model; includes both models' AUROC and its change. All-zero features are omitted. |
+| `class_performance.csv` | Accuracy, unparsed outputs, mean L0 and mean per-sample relative reconstruction error by model/class. |
+| `class_association_heatmap_*.png/svg` | Nine-class AUROC heatmaps for the union of both models' class candidates. |
+| `class_activation_heatmap_*.png/svg` | Mean activations of those same candidates across the nine classes. |
+| `top_changes_activation_heatmap_*.png/svg` | Class mean activations of the global Top 10 changed features. |
+| `summary.json` → `class_analysis` | Class counts, ranking definition, candidate counts, plot names and limitations. |
+
+Heatmaps show base/tuned side by side with **identical feature IDs and order**.
+Each feature's mean activation is divided by its maximum class mean **across both
+models**, using a shared denominator, so patterns can be compared without
+independent autoscaling. The CSVs preserve raw values. These normalized colors
+compare a feature across classes/models, not absolute magnitude between features.
+AUROC heatmaps use a fixed 0–1 scale. Long candidate lists are paginated at 30
+features per page. When no eligible candidates or changed features exist, the
+corresponding CSV contains headers and no rows, and its heatmaps are omitted.
+
+### How a class candidate is ranked
+
+For each model, feature and true class, compute:
+
+- Mean activation within the class and in the rest of the sample set.
+- Activation frequency (`z > 0`) within the class and in the rest.
+- One-vs-rest **AUROC**: the probability that a randomly selected class sample
+  has greater activation than a randomly selected non-class sample, with ties
+  counting as half. A constant feature has AUROC 0.5, even if its activation is
+  large everywhere. This is a descriptive feature-separation score, not a
+  separately trained classifier or a significance test.
+
+Candidates require AUROC > 0.5, positive class-minus-rest mean activation, and
+at least `--min_class_active 3` active samples in that class. Sort by AUROC,
+then mean difference, then feature ID for deterministic ties. Negative
+associations remain visible in the full statistics but are not in the positive
+Top K. Fewer than ten qualifying features is a valid result; scores are never
+filled with dead or constant features. With two samples per class, lower the
+minimum support explicitly to 2 if doing a tiny software smoke test.
+
+`--feature_top_k` controls both class candidate list length and the global change
+list (default 10). The older `--top_k` still controls **per-sample** changes
+(default 20). These rank different quantities. A feature can change strongly
+without distinguishing tissue classes, or distinguish classes without changing.
+Columns `global_change_rank`, `in_global_top_changes`, `base_auroc`, `tuned_auroc`,
+`auroc_delta`, and `class_mean_delta` help compare both questions.
+
+Balanced samples give each class equal representation. An existing unbalanced
+manifest is allowed if all classes have at least two samples; actual counts and
+`balanced: false` are recorded. Rest-class statistics/AUROC then weight individual
+samples equally, so more frequent rest classes have more influence.
+
+This stage is **exploratory discovery on the same samples used for ranking**.
+It supplies no p-values, confidence claims, medical feature names, independent
+validation, or feature interventions. Twenty images per class is a starting
+experiment, not a guarantee of statistical reliability. Ground-truth class
+association does not establish a biological mechanism or a causal role in the
+prediction. High reconstruction FVU remains a reason to question the chosen
+layer/token position. Steps 3 (independent examples/validation) and 4
+(interventions with controls) remain future work.
 
 ## Where it connects
 
@@ -29,6 +134,8 @@ CRC-VAL-HE-7K → fixed samples.json              │
   deterministic greedy generation, and writes reports.
 - `scope2_utils.py` loads and validates the SAE, attaches a temporary observation
   hook, and calculates reconstruction/feature metrics.
+- `scope2_class_analysis.py` groups frozen activations by true tissue label,
+  computes association scores, and exports candidate rankings and heatmaps.
 - `inference_utils.py` supplies the same prompt preprocessing and model loader
   used by existing inference. Its input preparation was extracted into a shared
   helper; the generation behavior remains the same.
@@ -57,9 +164,10 @@ python run_scope2_analysis.py \
   --output_dir ./runs/scope2-smoke
 ```
 
-The script uses `torch`, `numpy`, `huggingface_hub`, and `safetensors` already
-present in the model environment. It does not require SAELens or an upgrade of
-the working training dependencies. Hugging Face authentication/access must still
+The original smoke path uses `torch`, `numpy`, `huggingface_hub`, and `safetensors`
+already present in the model environment; class heatmaps additionally use
+`matplotlib` from `requirements-scope2.txt`. It does not require SAELens or an
+upgrade of the working training dependencies. Hugging Face authentication/access must still
 be available. First use downloads only the selected SAE config and parameter
 file (about 336 MB), not the entire Scope 2 collection. SAE inference runs in
 float32 on CPU; language models run one at a time using the existing 4-bit CUDA
@@ -163,9 +271,11 @@ MedGemma checkpoint. Matching architecture and tensor dimensions are necessary
 but insufficient evidence of compatibility. Reports intentionally retain
 `transfer_status: unvalidated` even when the computation completes.
 
-Local checks: `python3 -m unittest discover -s tests -v`. These use synthetic SAE
+Local checks (with `requirements-scope2.txt` installed):
+`python3 -m unittest discover -s tests -v`. These use synthetic SAE
 weights and a tiny fake model to test equations, capture timing, sample pairing,
-hash checks and report generation. An additional randomly initialized, tiny
+hash checks, balanced sampling, tied AUROC against a pairwise oracle, candidate
+filtering and report/heatmap generation. An additional randomly initialized, tiny
 Hugging Face Gemma 3 model checks real decoder hooks through a PEFT wrapper on
 CPU and verifies that observation does not change generated tokens. No pretrained
 model is downloaded for these tests; they do not replace the real VM experiment.

@@ -5,7 +5,7 @@ MedGemma-FL is a research project exploring federated fine-tuning of MedGemma wi
 ## Project status
 
 - **Current baseline (`main`):** runnable federated MedGemma fine-tuning based on the NVIDIA FLARE MedGemma example, with histopathology tissue classification as the current demonstration task.
-- **Scope 2 development (`scope-2`):** offline, fixed-sample SAE diagnostics comparing base MedGemma with a federated checkpoint. See [Scope 2 experiment](docs/scope2.md) for the VM command and outputs. Real-model compatibility remains unvalidated.
+- **Scope 2 development (`scope-2`):** offline SAE diagnostics comparing base MedGemma with a federated checkpoint, including class-balanced sampling, exploratory tissue-class associations, feature rankings and heatmaps. See [Scope 2 experiment](docs/scope2.md) for the VM commands and outputs. Medical interpretations and SAE transfer validity remain unvalidated.
 - **Planned work:** cross-round interpretability experiments and downstream pediatric oncology clinical trial matching.
 
 We plan to explore Gemma Scope 2 as an interpretability and auditing layer to examine model behavior across federated rounds and during downstream clinical trial matching. Gemma Scope 2 integration and clinical trial matching are not yet part of the runnable baseline.
@@ -44,6 +44,7 @@ Weights for [`google/medgemma-4b-it`](https://huggingface.co/google/medgemma-4b-
 | `run_evaluation.py` | Evaluates base vs fine-tuned accuracy on `CRC-VAL-HE-7K`, following the MedGemma notebook's evaluation setup. |
 | `run_scope2_analysis.py` | Offline base/federated comparison using one frozen Gemma Scope 2 SAE on fixed evaluation samples. |
 | `scope2_utils.py` | Validated SAE loading, prompt residual capture, reconstruction diagnostics, and paired feature statistics. |
+| `scope2_class_analysis.py` | Ground-truth class association statistics, Top K candidates, and paired base/tuned heatmaps. |
 
 ## Prerequisites
 

@@ -7,6 +7,7 @@ import csv
 import gc
 import hashlib
 import json
+import random
 import subprocess
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -14,7 +15,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from data_utils import DEFAULT_MODEL_NAME_OR_PATH, PROMPT, collect_image_records, sample_records
+from data_utils import DEFAULT_MODEL_NAME_OR_PATH, PROMPT, RAW_TISSUE_CODES, collect_image_records, sample_records
+from scope2_class_analysis import export_class_report, require_plotting
 from scope2_utils import (
     SAE_SOURCE_MODEL, PromptResidualCapture, feature_comparison, file_sha256,
     input_fingerprint, load_scope2_sae, reconstruction_metrics, resolve_decoder_layer,
@@ -34,22 +36,41 @@ def write_csv(path, rows):
         writer.writerows(rows)
 
 
-def make_manifest(dataset_dir: Path, max_samples: int, seed: int, manifest_path=None):
+def make_manifest(dataset_dir: Path, max_samples: int, seed: int, manifest_path=None, samples_per_class=None):
     prompt_hash = hashlib.sha256(PROMPT.encode()).hexdigest()
+    if manifest_path and samples_per_class is not None:
+        raise ValueError("Choose either an existing manifest or new balanced sampling")
     if manifest_path:
         manifest = json.loads(Path(manifest_path).read_text())
         if manifest.get("schema_version") != 1 or manifest.get("prompt_sha256") != prompt_hash:
             raise ValueError("Manifest schema or classification prompt does not match this code")
         records = manifest["samples"]
     else:
-        records = sample_records(collect_image_records(str(dataset_dir)), max_samples, seed)
+        all_records = collect_image_records(str(dataset_dir))
+        if samples_per_class is not None:
+            if samples_per_class < 2:
+                raise ValueError("samples_per_class must be at least 2 for class comparisons")
+            pools = [[r for r in all_records if r["label"] == c] for c in range(9)]
+            shortages = {RAW_TISSUE_CODES[c]: len(pool) for c, pool in enumerate(pools) if len(pool) < samples_per_class}
+            if shortages:
+                raise ValueError(f"Not enough images for {samples_per_class} per class: {shortages}")
+            rng = random.Random(seed)
+            records = [r for pool in pools for r in rng.sample(pool, samples_per_class)]
+            rng.shuffle(records)
+        else:
+            records = sample_records(all_records, max_samples, seed)
         records = [{"sample_id": f"sample-{i:04d}", "image": r["image"], "label": r["label"],
                     "label_name": r["label_name"], "image_sha256": file_sha256(dataset_dir / r["image"])}
                    for i, r in enumerate(records)]
         manifest = {"schema_version": 1, "seed": seed, "prompt": PROMPT,
+                    "sampling": {"method": "balanced_by_true_label" if samples_per_class is not None else "random",
+                                 "samples_per_class": samples_per_class,
+                                 "class_counts": {RAW_TISSUE_CODES[c]: sum(r["label"] == c for r in records) for c in range(9)}},
                     "prompt_sha256": prompt_hash, "samples": records}
     if not records or len({r["sample_id"] for r in records}) != len(records):
         raise ValueError("Manifest must contain nonempty, unique sample IDs")
+    if len({str((dataset_dir / r["image"]).resolve()) for r in records}) != len(records):
+        raise ValueError("Manifest contains duplicate image paths")
     for record in records:
         if not isinstance(record["label"], int) or not 0 <= record["label"] < 9:
             raise ValueError("Manifest tissue label must be an integer in [0, 8]")
@@ -144,7 +165,7 @@ def analyze_model(tag, model_path, args, manifest, sae, output_dir, paired_input
             torch.cuda.empty_cache()
 
 
-def export_comparison(base, tuned, output_dir, top_k):
+def export_comparison(base, tuned, output_dir, top_k, feature_top_k=10):
     base_ids = [row["sample_id"] for row in base["samples"]]
     tuned_ids = [row["sample_id"] for row in tuned["samples"]]
     if base_ids != tuned_ids:
@@ -154,6 +175,13 @@ def export_comparison(base, tuned, output_dir, top_k):
     write_csv(output_dir / "feature_summary.csv", [
         {"feature_id": int(j), **{key: float(value[j]) for key, value in stats.items()}} for j in ranking
     ])
+    changed_ranking = ranking[stats["mean_abs_delta"][ranking] > 0][:feature_top_k]
+    top_changes = [{"rank": rank, "feature_id": int(j), **{key: float(value[j]) for key, value in stats.items()}}
+                   for rank, j in enumerate(changed_ranking, start=1)]
+    with open(output_dir / "top_feature_changes.csv", "w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=["rank", "feature_id"] + list(stats))
+        writer.writeheader()
+        writer.writerows(top_changes)
     samples, changes = [], []
     groups = {"wrong_to_right": 0, "right_to_wrong": 0, "both_right": 0, "both_wrong": 0}
     for i, (before, after) in enumerate(zip(base["samples"], tuned["samples"])):
@@ -185,7 +213,8 @@ def export_comparison(base, tuned, output_dir, top_k):
     return {"prediction_groups": groups,
             "accuracy_delta": tuned["metrics"]["accuracy"] - base["metrics"]["accuracy"],
             "changed_feature_count": int(np.count_nonzero(stats["mean_abs_delta"])),
-            "mean_absolute_feature_delta": float(stats["mean_abs_delta"].mean())}
+            "mean_absolute_feature_delta": float(stats["mean_abs_delta"].mean()),
+            "top_changed_feature_ids": [int(j) for j in changed_ranking]}
 
 
 def parse_args():
@@ -193,19 +222,27 @@ def parse_args():
     parser.add_argument("--tuned_model_path", required=True, help="Existing NVFlare .pt or PEFT adapter directory")
     parser.add_argument("--dataset_dir", default="./CRC-VAL-HE-7K")
     parser.add_argument("--base_model", default=DEFAULT_MODEL_NAME_OR_PATH)
-    parser.add_argument("--max_samples", type=int, default=20)
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--max_samples", type=int, default=20, help="Total random samples for the legacy smoke test")
+    selection.add_argument("--samples_per_class", type=int, help="Sample this many images independently from EACH of 9 true classes")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--manifest", help="Reuse samples.json from a prior run; overrides sample count/selection seed")
+    selection.add_argument("--manifest", help="Reuse samples.json from a prior run; overrides sample count/selection seed")
     parser.add_argument("--sae_layer", type=int, choices=[9, 17, 22, 29], default=17)
     parser.add_argument("--sae_revision", default="main", help="HF revision; resolved commit is recorded in run.json")
     parser.add_argument("--max_new_tokens", type=int, default=64)
-    parser.add_argument("--top_k", type=int, default=20)
+    parser.add_argument("--top_k", type=int, default=20, help="Changed features per sample in sample_feature_deltas.csv")
+    parser.add_argument("--feature_top_k", type=int, default=10, help="Global changed features and positive associations per class")
+    parser.add_argument("--min_class_active", type=int, default=3, help="Minimum active samples in a class for its candidate ranking")
     parser.add_argument("--device", default="cuda", help="cuda, cuda:N, or cpu (slow)")
     parser.add_argument("--output_dir", default="./runs/scope2-smoke", help="Must not already exist")
     parser.add_argument("--with_gemma_control", action="store_true", help="Also run SAE-source Gemma 3 4B IT; requires HF access")
     args = parser.parse_args()
     if min(args.max_samples, args.max_new_tokens, args.top_k) < 1:
         parser.error("max_samples, max_new_tokens and top_k must be positive")
+    if min(args.feature_top_k, args.min_class_active) < 1:
+        parser.error("feature_top_k and min_class_active must be positive")
+    if args.samples_per_class is not None and args.samples_per_class < 2:
+        parser.error("samples_per_class must be at least 2")
     if args.device != "cpu" and args.device != "cuda" and not (
             args.device.startswith("cuda:") and args.device[5:].isdigit()):
         parser.error("device must be cpu, cuda, or cuda:N")
@@ -221,7 +258,11 @@ def main():
     args = parse_args()
     if args.device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA is unavailable; run on the tested GPU VM")
-    manifest = make_manifest(Path(args.dataset_dir), args.max_samples, args.seed, args.manifest)
+    manifest = make_manifest(Path(args.dataset_dir), args.max_samples, args.seed, args.manifest, args.samples_per_class)
+    counts = [sum(r["label"] == c for r in manifest["samples"]) for c in range(9)]
+    if min(counts) >= 2:
+        require_plotting()  # Fail before downloading/loading models if a dependency is missing.
+    print(f"Selected {len(manifest['samples'])} images; true class counts: {dict(zip(RAW_TISSUE_CODES, counts))}", flush=True)
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=False)
     write_json(output_dir / "samples.json", manifest)
@@ -243,7 +284,8 @@ def main():
         base = analyze_model("base", args.base_model, args, manifest, sae, output_dir)
         tuned = analyze_model("tuned", args.tuned_model_path, args, manifest, sae, output_dir,
                               paired_inputs=[row["input_sha256"] for row in base["samples"]])
-        summary = export_comparison(base, tuned, output_dir, args.top_k)
+        summary = export_comparison(base, tuned, output_dir, args.top_k, args.feature_top_k)
+        summary["class_analysis"] = export_class_report(base, tuned, output_dir, args.feature_top_k, args.min_class_active)
         summary.update({"base": base["metrics"], "tuned": tuned["metrics"],
                         "transfer_status": run["transfer_status"], "gemma_control": None})
         if args.with_gemma_control:

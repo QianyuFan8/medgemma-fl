@@ -1,0 +1,2 @@
+# Plotting only; keep the already working VM training environment installed.
+matplotlib>=3.7,<4
