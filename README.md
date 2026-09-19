@@ -120,7 +120,7 @@ python run_evaluation.py --task rnaseq \
 
 Next protocol (does not replace the archived baseline): `--balance_labels`, `--num_rounds 8`, `--num_train_epochs 2`, a new `--comm_log_root` and `--name_suffix` so simulator job names do not collide. IID comparison comes **after** that non-IID rerun.
 
-Step-by-step NVIDIA Brev login, copy, train, eval, and `brev stop`: [docs/brev-rnaseq.md](docs/brev-rnaseq.md).
+Step-by-step NVIDIA Brev login, copy, train, eval, and `brev stop`: [docs/brev-rnaseq.md](docs/brev-rnaseq.md). Team slides for this 3×1 baseline: [docs/slides/TARGET_RNAseq_FL_baseline_3r1e.pptx](docs/slides/TARGET_RNAseq_FL_baseline_3r1e.pptx).
 
 ## Code structure
 

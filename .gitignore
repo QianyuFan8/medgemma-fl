@@ -28,3 +28,8 @@ __pycache__/
 /job.py.before-nvflare-fix
 /client.py.before-warmup-fix
 .Rhistory
+
+# Local research datasets
+RNAseq/
+methyl/
+PCGP/

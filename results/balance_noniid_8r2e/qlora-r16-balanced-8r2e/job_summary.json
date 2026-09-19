@@ -1,0 +1,10 @@
+{
+  "name": "qlora-r16-balanced-8r2e",
+  "rank": 16,
+  "quantized": true,
+  "bytes_per_round": 461973504.0,
+  "local_accuracy": 0.967741935483871,
+  "accuracy": 0.7455,
+  "global_model": "/tmp/nvflare/simulation/qlora-r16-balanced-8r2e/server/simulate_job/app_server/FL_global_model.pt",
+  "comm_log_dir": "/home/ubuntu/medgemma-fl/comm_logs_balanced_8r2e/qlora-r16-balanced-8r2e"
+}
