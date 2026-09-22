@@ -1,0 +1,12 @@
+{
+  "metadata": "../methylation_cpg_routes/data/ccsk_wt_samples.tsv",
+  "matrix_root": "../methylation_cpg_routes",
+  "metadata_reviewed": true,
+  "diagnoses": ["CCSK", "WT"],
+  "output": "data/methylation_ccsk_wt_v1",
+  "top_k": 100,
+  "fdr": 0.05,
+  "variance_cap": 20000,
+  "seed": 20260922,
+  "covariates": []
+}

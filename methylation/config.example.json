@@ -1,0 +1,11 @@
+{
+  "metadata": "../methylation_cpg_routes/data/samples_450k.tsv",
+  "matrix_root": "../methylation_cpg_routes",
+  "metadata_reviewed": false,
+  "output": "data/methylation_450k_v1",
+  "top_k": 100,
+  "fdr": 0.05,
+  "variance_cap": 20000,
+  "seed": 20260922,
+  "covariates": []
+}
