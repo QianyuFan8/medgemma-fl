@@ -29,6 +29,7 @@ import time
 
 from data_utils import DEFAULT_MODEL_NAME_OR_PATH, format_training_example, resolve_image_path
 from datasets import Image, load_dataset
+from methylation_utils import build_methylation_collator, format_methylation_example
 from lora_utils import build_uniform_lora_rank_map, truncate_global_bank_for_site
 from model import MEDGEMMA_IMAGE_TOKEN_ID, apply_adapter_state, create_peft_medgemma_model, get_adapter_state_dict
 from transformers import AutoProcessor
@@ -48,8 +49,10 @@ import nvflare.client as flare
 from nvflare.apis.fl_constant import FLMetaKey
 
 
-def _load_site_split(json_path: str, image_root: str):
+def _load_site_split(json_path: str, image_root: str, task: str = "histology"):
     dataset = load_dataset("json", data_files=json_path, split="train")
+    if task == "methylation":
+        return dataset.map(format_methylation_example)
     dataset = dataset.map(lambda example: {"image": resolve_image_path(example["image"], image_root)})
     dataset = dataset.cast_column("image", Image())
     return dataset.map(format_training_example)
@@ -107,6 +110,10 @@ def _build_training_args(args, output_dir: str, do_eval: bool) -> SFTConfig:
     )
     if args.max_steps is not None:
         training_args["max_steps"] = args.max_steps
+    if args.task == "methylation":
+        training_args.pop("warmup_steps", None)
+        training_args["warmup_ratio"] = 0.03
+        training_args["max_length"] = args.max_seq_length
     if do_eval:
         training_args["eval_strategy"] = "steps"
         training_args["eval_steps"] = args.eval_steps
@@ -117,6 +124,8 @@ def _build_training_args(args, output_dir: str, do_eval: bool) -> SFTConfig:
 
 def main():
     parser = argparse.ArgumentParser(description="Federated MedGemma client with QLoRA-based local training.")
+    parser.add_argument("--task", choices=("histology", "methylation"), default="histology")
+    parser.add_argument("--max_seq_length", type=int, default=4096)
     parser.add_argument(
         "--data_path", type=str, default="./data/site-1", help="Site data directory containing train.json."
     )
@@ -207,14 +216,15 @@ def main():
 
     processor = AutoProcessor.from_pretrained(args.model_name_or_path, trust_remote_code=True, use_fast=False)
     processor.tokenizer.padding_side = "right"
-    collate_fn = _build_collate_fn(processor)
+    collate_fn = (build_methylation_collator(processor, args.max_seq_length)
+                  if args.task == "methylation" else _build_collate_fn(processor))
 
-    train_dataset = _load_site_split(train_json, image_root)
+    train_dataset = _load_site_split(train_json, image_root, args.task)
     if len(train_dataset) == 0:
         raise ValueError(
             f"No training samples found in {train_json}. Re-run prepare_data.py with a non-empty site split."
         )
-    eval_dataset = _load_site_split(validation_json, image_root) if os.path.isfile(validation_json) else None
+    eval_dataset = _load_site_split(validation_json, image_root, args.task) if os.path.isfile(validation_json) else None
 
     print(
         f"site={client_name}, train_samples={len(train_dataset)}, validation_samples={len(eval_dataset or [])}, "

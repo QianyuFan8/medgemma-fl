@@ -31,6 +31,8 @@ from nvflare.recipe import SimEnv, add_experiment_tracking
 
 def define_parser():
     parser = argparse.ArgumentParser(description="Federated MedGemma QLoRA fine-tuning with FedAvg.")
+    parser.add_argument("--task", choices=("histology", "methylation"), default="histology")
+    parser.add_argument("--max_seq_length", type=int, default=4096)
     parser.add_argument("--n_clients", type=int, default=3, help="Number of federated clients (default: 3).")
     parser.add_argument("--num_rounds", type=int, default=3, help="Federated rounds (default: 3).")
     parser.add_argument(
@@ -206,6 +208,8 @@ def _parse_site_lora_ranks(site_lora_ranks: str | None, n_clients: int, global_l
 
 def _build_train_args(args, site_data_path: str, image_root: str, report_to: str, local_lora_rank: int) -> str:
     train_args = [
+        "--task", args.task,
+        "--max_seq_length", str(args.max_seq_length),
         "--data_path",
         site_data_path,
         "--image_root",
@@ -242,6 +246,12 @@ def main():
     client_names = [f"site-{idx}" for idx in range(1, n_clients + 1)]
     data_dir = os.path.abspath(args.data_dir)
     image_root = os.path.abspath(args.image_root)
+    if args.task == "methylation":
+        # A plain same-rank FedAvg baseline, not automatic heterogeneous ranks.
+        if args.site_lora_ranks is None:
+            args.site_lora_ranks = ",".join([str(args.global_lora_rank)] * n_clients)
+        from methylation_validate import validate_clients
+        validate_clients(data_dir, n_clients)
     site_lora_ranks = _parse_site_lora_ranks(args.site_lora_ranks, n_clients, args.global_lora_rank)
     job_name = "medgemma" if args.lora_aggregation == "naive" else "medgemma-hlora"
     rank_summary = ", ".join(f"{site_name}={rank}" for site_name, rank in zip(client_names, site_lora_ranks))
