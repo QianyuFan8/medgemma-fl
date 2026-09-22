@@ -16,6 +16,8 @@ required <- c("sample_id", "patient_id", "diagnosis", "platform", "matrix_file",
 if (!all(required %in% names(m))) stop("Missing sample-sheet columns: ", paste(setdiff(required, names(m)), collapse=", "))
 m <- m[!is.na(m$include) & tolower(m$include) == "true", , drop=FALSE]
 if (!is.null(cfg$diagnoses)) m <- m[m$diagnosis %in% cfg$diagnoses, , drop=FALSE]
+if (!is.null(cfg$diagnoses) && !all(cfg$diagnoses %in% m$diagnosis))
+  stop("Requested diagnoses missing from reviewed metadata: ", paste(setdiff(cfg$diagnoses, m$diagnosis), collapse=", "))
 if (anyNA(m[, required]) || any(!nzchar(m$diagnosis)) || !nrow(m)) stop("Missing required metadata.")
 if (length(unique(tolower(m$platform))) != 1L) stop("Run one platform at a time.")
 if (anyDuplicated(m$patient_id) || anyDuplicated(m$sample_id)) stop("Require one reviewed sample per patient.")

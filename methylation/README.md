@@ -1,6 +1,6 @@
 # DNA methylation: limma → ridge versus federated MedGemma
 
-This research branch starts from `main`, not `scope-2`. No Scope 2 changes are merged. Existing histology commands retain their default behavior.
+This research branch starts from `main`. Existing histology commands retain their default behavior.
 
 ## What this experiment does
 
@@ -13,6 +13,231 @@ This research branch starts from `main`, not `scope-2`. No Scope 2 changes are m
 7. Tune ridge's regularization on validation only. MedGemma uses QLoRA and simulated same-rank FedAvg clients. Compare balanced accuracy, macro-F1, per-class recall, accuracy, and unparsed outputs on identical patients.
 
 **This is centralized feature selection followed by federated model training, not end-to-end federated feature selection or differential privacy.** The initial simulated client partition is stratified/random, not a real institution split. Ridge is pooled/centralized, so this comparison differs in both model family and training regime; it does not isolate the causal effect of federation.
+
+## Complete VM workflow: DNAnexus download → five-class 450K analysis → federated training → comparison
+
+Run the following commands on the VM from the `medgemma-fl` repository root, except for the local publishing step. Neither the old `target_data/` directory nor a copy of `methylation_cpg_routes` is required on the VM. **Diagnosis labels come exclusively from the verified metadata downloaded from DNAnexus; missing labels are not filled from the old GDC clinical tables.**
+
+### 1. Publish the local branch, then retrieve it on the VM
+
+First run these commands in the local repository on the Mac. Publishing is an explicit user action; updating this document does not push the branch:
+
+```bash
+git status
+git add download_methylation.py methylation_manifest.py methylation/prepare.R methylation/README.md tests/test_methylation_manifest.py
+git add -u target_data
+git commit -m "Use DNAnexus-only metadata and document VM methylation workflow"
+git push -u origin research/dna-methylation
+```
+
+Review any other changes shown by `git status` separately instead of indiscriminately running `git add .`. If these changes are already committed, skip the staging and commit commands and only push.
+
+For a new checkout on the VM:
+
+```bash
+git clone --branch research/dna-methylation https://github.com/QianyuFan8/medgemma-fl.git
+cd medgemma-fl
+```
+
+If the repository already exists on the VM, inspect and preserve local changes first, then run `git fetch origin`, `git switch research/dna-methylation`, and `git pull --ff-only`. Do not overwrite ongoing experiments.
+
+### 2. Set up the environment, GPUs, R packages, and model access
+
+Prefer the CUDA/Python environment that already runs the original MedGemma workflow. First check:
+
+```bash
+python3 --version
+nvidia-smi
+Rscript --version
+```
+
+Python >=3.10 is required. To create a new Python environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install dxpy
+python -m pip install -r requirements.txt
+python -m pip check
+python -c 'import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.device_count())'
+```
+
+`requirements-vm.txt` records versions from the original VM; it is not a universal installation lockfile. Resolve any PyTorch/CUDA installation or compatibility errors before training. The default three-client parallel configuration requires three GPUs with sufficient memory; a single-GPU VM is not guaranteed to accommodate three concurrent clients.
+
+If R or build dependencies are missing on an Ubuntu VM, a user with sudo privileges can run:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y r-base r-base-dev gfortran libcurl4-openssl-dev libssl-dev libxml2-dev
+```
+
+Use a separate R package library inside the repository's ignored data directory; do not commit the installed packages:
+
+```bash
+mkdir -p data/r-library
+export R_LIBS_USER="$PWD/data/r-library"
+unset R_HOME
+Rscript methylation/install.R
+Rscript -e 'stopifnot(all(vapply(c("data.table","jsonlite","limma","glmnet"), requireNamespace, logical(1), quietly=TRUE))); sessionInfo()'
+```
+
+In each new terminal, reactivate `.venv` and set `R_LIBS_USER` as above. After accepting the license for `google/medgemma-4b-it` on Hugging Face, authenticate:
+
+```bash
+hf auth login
+```
+
+### 3. Log in to DNAnexus, select the read-only project, and verify metadata
+
+```bash
+dx login
+dx select --level VIEW project-JBXfX9Q0vQQYJ9k4BxGVyYzJ
+dx ls project-JBXfX9Q0vQQYJ9k4BxGVyYzJ:/
+dx ls project-JBXfX9Q0vQQYJ9k4BxGVyYzJ:/methyl/
+dx find data --project project-JBXfX9Q0vQQYJ9k4BxGVyYzJ --name TARGET_meta.txt --brief
+```
+
+**Do not assume the metadata is located in `/methyl/`.** The current local example is named `TARGET_meta.txt` and must contain `Sample` and `Dx` columns. If the search returns no results or multiple versions, confirm the correct file in the mentor's shared project rather than automatically choosing the first result. Inspect any newer file with a different name or schema and adapt the reader if necessary. Paste the verified `project-...:file-...` reference or full project path below:
+
+```bash
+mkdir -p data/raw/metadata
+read -r -p "Paste the verified DNAnexus metadata reference: " META_DX_SOURCE
+dx describe "$META_DX_SOURCE"
+dx download "$META_DX_SOURCE" -o data/raw/metadata/TARGET_meta.txt
+head -n 5 data/raw/metadata/TARGET_meta.txt
+```
+
+Never put tokens or passwords in code, configuration files, or Git. Run `dx login` again if you encounter `ExpiredToken`. The local token had expired when this document was updated, so the exact remote metadata path was not reverified and no large files were downloaded.
+
+### 4. Download the five 450K beta matrices
+
+```bash
+python download_methylation.py --platform 450k
+python download_methylation.py --platform 450k --download
+```
+
+The first command previews transfers; the second invokes `dx download`. The five source cohorts are AML, CCSK, NBL, OS, and WT. Completed files are stored in `data/raw/methylation/` and skipped on subsequent runs; interrupted downloads retain their `.part` files. Do not manually rename incomplete downloads to their final filenames. The paths use the previously listed `/methyl/idat_sample_sheet_TARGET-...` names; consult `dx ls` if the mentor has renamed files.
+
+### 5. Match patient labels exclusively from DNAnexus metadata
+
+```bash
+python methylation_manifest.py \
+  --platform 450k \
+  --metadata data/raw/metadata/TARGET_meta.txt \
+  --matrix-root data/raw/methylation \
+  --output data/manifests/450k_v1
+
+cat data/manifests/450k_v1/audit.json
+head -n 10 data/manifests/450k_v1/samples.tsv
+```
+
+The script reads only matrix headers and matches patient IDs to the metadata's `Dx` field; matrix filenames are not used as diagnosis labels. Normal/non-primary samples, unmatched or conflicting diagnoses, additional samples from the same patient, and classes with fewer than five patients are recorded separately and excluded. Five patients is only a software threshold, not evidence of statistical reliability.
+
+**The current local `TARGET_meta.txt` contains only 15 AML label records; do not assume it covers all five methylation matrices.** Inspect `unmatched_by_source`. If many samples are unmatched, request metadata covering the methylation cohort from the mentor rather than restoring the old clinical-table fallback or assigning labels from filenames. A successful run may still represent an incompletely covered subset, which must be disclosed in the report.
+
+The generated `config.json` defaults to `metadata_reviewed=false`. Verify that all five diagnoses are represented and review the exclusions, then open it in an editor:
+
+```bash
+nano data/manifests/450k_v1/config.json
+```
+
+Set `metadata_reviewed` to `true` only after review. You can set `top_k=100` or `200`; use a new `output` path for a different experiment. Do not assign the source file's cancer type to unlabeled samples simply to obtain a five-class dataset.
+
+### 6. Run limma selection and export data for three clients
+
+```bash
+mkdir -p logs
+set -o pipefail
+python prepare_methylation.py \
+  --config data/manifests/450k_v1/config.json \
+  --n-clients 3 2>&1 | tee logs/methylation_450k_prepare.log
+```
+
+The default output is `data/methylation_450k_v1/`. Inspect `splits.tsv`, `sample_audit.tsv`, and `selected_cpgs.tsv`. Only training patients contribute to limma selection; validation/test patients do not. Each of the three simulated sites contains multiple diagnosis classes. Increase VM RAM if needed; the current import is not an out-of-core implementation.
+
+### 7. Run the ridge baseline on validation patients
+
+```bash
+python evaluate_methylation.py ridge \
+  --data-dir data/methylation_450k_v1 \
+  --output runs/methylation_450k/ridge_validation
+```
+
+### 8. Smoke-test federated MedGemma before the full training run
+
+First confirm that `torch.cuda.device_count()` is >=3 and that the GPUs support BF16 and have sufficient memory. This example uses the default three-GPU configuration; do not launch it unchanged on a single-GPU machine.
+
+```bash
+python job.py --task methylation \
+  --data_dir data/methylation_450k_v1/clients \
+  --n_clients 3 --num_rounds 1 --max_steps 1 \
+  --lora_aggregation naive --global_lora_rank 16 --site_lora_ranks 16,16,16 \
+  --per_device_train_batch_size 1 --per_device_eval_batch_size 1 \
+  --gradient_accumulation_steps 4 --max_seq_length 4096 \
+  --workspace runs/methylation_450k/fl_smoke \
+  2>&1 | tee logs/methylation_450k_fl_smoke.log
+```
+
+The smoke run checks the actual tokenizer, NVFlare integration, and GPU environment; it is not a performance experiment. After it succeeds:
+
+```bash
+python job.py --task methylation \
+  --data_dir data/methylation_450k_v1/clients \
+  --n_clients 3 --num_rounds 3 --num_train_epochs 1 \
+  --lora_aggregation naive --global_lora_rank 16 --site_lora_ranks 16,16,16 \
+  --per_device_train_batch_size 1 --per_device_eval_batch_size 1 \
+  --gradient_accumulation_steps 4 --max_seq_length 4096 \
+  --workspace runs/methylation_450k/fl \
+  2>&1 | tee logs/methylation_450k_fl.log
+```
+
+### 9. Evaluate the final aggregated model on validation patients and compare
+
+```bash
+find runs/methylation_450k/fl -name FL_global_model.pt -print
+read -r -p "Paste the final aggregated checkpoint path: " METHYLATION_MODEL
+python evaluate_methylation.py medgemma \
+  --data-dir data/methylation_450k_v1 --model-path "$METHYLATION_MODEL" \
+  --output runs/methylation_450k/medgemma_validation
+python evaluate_methylation.py compare \
+  --data-dir data/methylation_450k_v1 \
+  --ridge-predictions runs/methylation_450k/ridge_validation/predictions.csv \
+  --medgemma-predictions runs/methylation_450k/medgemma_validation/predictions.csv \
+  --output runs/methylation_450k/comparison_validation
+cat runs/methylation_450k/comparison_validation/evaluation.json
+```
+
+If the checkpoint is not in the directory above, use the actual result path printed by NVFlare. Do not accidentally evaluate the smoke-run checkpoint.
+
+### 10. Evaluate the test split only after all choices are frozen
+
+```bash
+python evaluate_methylation.py ridge --split test \
+  --data-dir data/methylation_450k_v1 --output runs/methylation_450k/ridge_test
+python evaluate_methylation.py medgemma --split test \
+  --data-dir data/methylation_450k_v1 --model-path "$METHYLATION_MODEL" \
+  --output runs/methylation_450k/medgemma_test
+python evaluate_methylation.py compare --split test \
+  --data-dir data/methylation_450k_v1 \
+  --ridge-predictions runs/methylation_450k/ridge_test/predictions.csv \
+  --medgemma-predictions runs/methylation_450k/medgemma_test/predictions.csv \
+  --output runs/methylation_450k/comparison_test
+cat runs/methylation_450k/comparison_test/evaluation.json
+```
+
+Do not use test results to select K, prompts, or training rounds. This is an internal holdout, not independent external validation.
+
+### 11. Run EPIC as a separate subsequent experiment
+
+```bash
+python download_methylation.py --platform epic --download
+python methylation_manifest.py --platform epic \
+  --metadata data/raw/metadata/TARGET_meta.txt \
+  --matrix-root data/raw/methylation --output data/manifests/epic_v1
+```
+
+Review the actual diagnoses and missing labels before editing the generated EPIC configuration. Repeat steps 6–10 with `epic` in place of `450k` in the relevant paths. The workflow does not automatically intersect the two platforms' top CpG panels.
 
 ## Local Mac: prepare the existing CCSK/WT dataset
 
