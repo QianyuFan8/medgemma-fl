@@ -43,7 +43,8 @@ def main():
                 w.writerow([sample, "-".join(sample.split("-")[:3]), ["A","B","C"][i//(60//a.classes)], "450k", matrix, sample+".Ave_Beta", "TRUE", "01"])
         output = root / "prepared"
         cfg = {"metadata": str(metadata), "output": str(output), "metadata_reviewed": True,
-               "top_k": 10, "variance_cap": 80, "seed": 1}
+               "top_k": 10, "variance_cap": 80, "seed": 1,
+               "covariates": [], "numeric_covariates": []}
         config = root / "config.json"; config.write_text(json.dumps(cfg))
         subprocess.run([sys.executable, "prepare_methylation.py", "--config", str(config),
                         "--rscript", a.rscript], cwd=repo, env=env, check=True)
