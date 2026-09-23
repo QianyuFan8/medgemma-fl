@@ -7,7 +7,8 @@ local panels. Pooled ridge/compare mode deliberately rejects mixed-panel tasks.
 
 ## Design
 
-- Sites 1 and 2 will use 450K patients; site 3 will use EPIC patients.
+- Site 1: AML + CCSK (450K); site 2: NBL + OS + WT (450K);
+  site 3: ALL + RT (EPIC). Diagnosis sets do not overlap across sites.
 - All prompts will offer ALL, AML, CCSK, NBL, OS, RT, and WT.
 - Split by globally resolved patient identity before fitting preprocessing.
 - Each site selects its panel using its own training patients only.
@@ -67,13 +68,17 @@ The explicit flags below implement that decision. All exclusions are retained in
 `exclusions.json`. Cross-cohort conflicts and cross-platform duplicate candidate
 patients still stop preparation; they are not silently relabeled.
 
-Within each diagnosis, 450K patients are shuffled and alternated between sites 1
-and 2. EPIC patients go to site 3. Before site assignment, one eligible sample per
+All AML/CCSK patients go to site 1, NBL/OS/WT to site 2, and ALL/RT to site 3.
+This is complete label-support separation, with unequal site sizes. Before site
+assignment, one eligible sample per
 patient is selected deterministically (type 01, then 09, then 03, then sample ID).
 Each site independently splits approximately 60/20/20 by diagnosis, fits QC and
 limma on training patients, and freezes 100 CpGs for validation/test. All prompts
-offer seven labels. The 450K sites are similar to each other; the EPIC site creates
-the strong label/platform heterogeneity. CCSK local training counts remain tiny.
+offer seven labels. Local panels can reveal site identity and therefore restrict
+the likely diagnoses: this is a shortcut/confounding risk, not evidence of
+platform-independent biology. CCSK local training counts remain tiny.
+This v2 partition rejects resuming old v1 balanced-site preparation. Keep the
+old outputs; regenerate all three panels and prompts in the new directory below.
 
 ```bash
 export R_LIBS_USER="$PWD/data/r-library"
@@ -83,9 +88,9 @@ set -o pipefail
 
 python prepare_mixed_methylation.py \
   --audit-dir data/manifests/mixed_7class_v1_audit \
-  --output data/methylation_mixed_7class_v1 \
+  --output data/methylation_mixed_7class_disjoint_v2 \
   --confirm-cohort-labels --exclude-unresolved \
-  2>&1 | tee logs/methylation_mixed_7class_prepare_v1.log
+  2>&1 | tee logs/methylation_mixed_7class_disjoint_prepare_v2.log
 ```
 
 Preparation prints post-QC counts by site, split, and diagnosis. It loads one site
@@ -102,14 +107,14 @@ This starts a fresh model, not the old five-class checkpoint.
 
 ```bash
 python job.py --task methylation \
-  --data_dir data/methylation_mixed_7class_v1/clients \
+  --data_dir data/methylation_mixed_7class_disjoint_v2/clients \
   --n_clients 3 --gpu '[0],[0],[0]' \
   --num_rounds 3 --num_train_epochs 1 \
   --lora_aggregation naive --global_lora_rank 16 --site_lora_ranks 16,16,16 \
   --per_device_train_batch_size 1 --per_device_eval_batch_size 1 \
   --gradient_accumulation_steps 4 --max_seq_length 4096 \
-  --workspace runs/methylation_mixed_7class/fl_gpu0_v1 \
-  2>&1 | tee logs/methylation_mixed_7class_fl_v1.log
+  --workspace runs/methylation_mixed_7class_disjoint/fl_gpu0_v2 \
+  2>&1 | tee logs/methylation_mixed_7class_disjoint_fl_v2.log
 ```
 
 ## Global validation with frozen local panels
@@ -117,11 +122,11 @@ python job.py --task methylation \
 After successful training, confirm the checkpoint exists, then evaluate:
 
 ```bash
-MIXED_MODEL=runs/methylation_mixed_7class/fl_gpu0_v1/medgemma/server/simulate_job/app_server/FL_global_model.pt
+MIXED_MODEL=runs/methylation_mixed_7class_disjoint/fl_gpu0_v2/medgemma/server/simulate_job/app_server/FL_global_model.pt
 test -f "$MIXED_MODEL" && python evaluate_methylation.py medgemma \
-  --data-dir data/methylation_mixed_7class_v1 \
+  --data-dir data/methylation_mixed_7class_disjoint_v2 \
   --model-path "$MIXED_MODEL" \
-  --output runs/methylation_mixed_7class/validation_v1
+  --output runs/methylation_mixed_7class_disjoint/validation_v2
 ```
 
 Each patient retains the source site's panel, while every prediction uses the

@@ -1,6 +1,6 @@
 """Prepare three local limma panels and a shared seven-class FL task."""
 import argparse
-from collections import Counter, defaultdict
+from collections import Counter
 import csv
 import hashlib
 import json
@@ -12,6 +12,14 @@ import subprocess
 from methylation_utils import make_record, panel_fingerprint
 
 CLASSES = ['ALL', 'AML', 'CCSK', 'NBL', 'OS', 'RT', 'WT']
+SITE_CLASSES = {'site-1': ['AML', 'CCSK'], 'site-2': ['NBL', 'OS', 'WT'],
+                'site-3': ['ALL', 'RT']}
+PARTITION = 'diagnosis_disjoint_450k_epic_v2'
+
+
+def check_partition(saved):
+    if saved.get('partition') != PARTITION or saved.get('site_classes') != SITE_CLASSES:
+        raise ValueError('Saved partition differs from diagnosis-disjoint v2; use a new output directory, not --resume')
 
 
 def dump(path, value):
@@ -42,11 +50,8 @@ def allocate(rows, seed):
         if not group or any(r['platform'] != expected for r in group):
             raise ValueError(f'Missing diagnosis or unexpected platform: {dx}')
         rng.shuffle(group)
-        if expected == 'epic':
-            sites['site-3'].extend(group)
-        else:
-            for i, row in enumerate(group):
-                sites[f'site-{1 + i % 2}'].append(row)
+        name = next(name for name, diagnoses in SITE_CLASSES.items() if dx in diagnoses)
+        sites[name].extend(group)
     for name, group in sites.items():
         counts = Counter(r['proposed_diagnosis'] for r in group)
         if len(counts) < 2 or min(counts.values()) < 5:
@@ -70,6 +75,8 @@ def export(root, seed):
                 rows = list(reader)
             if not rows or (probes is not None and current != probes):
                 raise ValueError('Empty split or inconsistent local panel')
+            if {r['diagnosis'] for r in rows} != set(SITE_CLASSES[name]):
+                raise ValueError(f'{name}/{split} has the wrong diagnosis partition; prepare a fresh v2 dataset')
             probes = current
             converted = [dict(make_record(r['patient_id'], r['diagnosis'], probes,
                               [float(r[p]) for p in probes], CLASSES), site_id=name) for r in rows]
@@ -94,7 +101,7 @@ def export(root, seed):
     dump(root/'task.json', {'classes': CLASSES, 'n_clients': 3, 'seed': seed,
                            'panel_mode': 'local', 'site_panels': panels, 'panel_id': bundle_id,
                            'selection': 'local_training_only_limma',
-                           'partition': 'simulated_two_450k_sites_one_epic_site', 'counts': counts})
+                           'partition': PARTITION, 'site_classes': SITE_CLASSES, 'counts': counts})
     from methylation_validate import validate_clients
     validate_clients(root/'clients', 3)
     print(json.dumps(counts, indent=2))
@@ -116,6 +123,7 @@ def main():
         p.error('--confirm-cohort-labels is required; cohort labels are user assertions')
     if a.resume:
         saved = json.loads((root/'preparation.json').read_text())
+        check_partition(saved)
         seed = saved['seed']
     else:
         if root.exists():
@@ -134,6 +142,7 @@ def main():
         dump(root/'exclusions.json', {'audit_exclusions': [r for r in rows if r['status'] != 'candidate_pending_label_review'],
                                      'additional_samples_same_patient': duplicates})
         dump(root/'preparation.json', {'seed': a.seed, 'top_k': a.top_k,
+                                      'partition': PARTITION, 'site_classes': SITE_CLASSES,
                                       'audit_dir': str(audit_dir.resolve()),
                                       'label_basis': 'user_confirmed_cohort_membership',
                                       'exclude_unresolved': a.exclude_unresolved})
