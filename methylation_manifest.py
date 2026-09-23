@@ -15,7 +15,7 @@ def patient_id(sample):
     return "-".join(parts[:3])
 
 
-def build_manifest(metadata, matrix_root, platform, output):
+def build_manifest(metadata, matrix_root, platform, output, allowed_samples=None):
     metadata, matrix_root, output = Path(metadata), Path(matrix_root), Path(output)
     if output.exists():
         raise FileExistsError(output)
@@ -53,6 +53,8 @@ def build_manifest(metadata, matrix_root, platform, output):
                                 label_status=status, recorded_labels="|".join(sorted(dxs)),
                                 label_source=str(metadata.resolve()),
                                 exclusion_reason=status if st in ("01", "03", "09") else "not_primary_tumor"))
+            if allowed_samples is not None and sample not in allowed_samples[cohort]:
+                records[-1]["exclusion_reason"] = "not_in_corresponding_sample_list"
     if not records:
         raise ValueError("No Ave_Beta columns found")
     records.sort(key=lambda r: (r["patient_id"], {"01":0,"09":1,"03":2}.get(r["sample_type"],99),r["sample_id"],r["matrix_file"]))

@@ -2,6 +2,41 @@
 
 This research branch starts from `main`. Existing histology commands retain their default behavior.
 
+## Current 450K label source: user-confirmed `.samples` cohort membership
+
+The current experiment uses the user's explicit confirmation that eligible tumor samples in `aml.samples`, `ccsk.samples`, `nbl.samples`, `os.samples`, and `wt.samples` carry the corresponding cohort diagnoses. This is a documented label-source assertion, **not independent clinical verification by the software**. It does not use `/RNAseq/TARGET_meta.txt` or the removed GDC clinical tables. Do not follow the older metadata-download instructions below for this mode.
+
+After updating this branch on the VM and activating its environment, run:
+
+```bash
+python download_methylation.py --platform 450k --sample-lists
+python download_methylation.py --platform 450k --sample-lists --download
+python prepare_cohort_labels.py \
+  --matrix-root data/raw/methylation \
+  --output data/manifests/450k_cohort_v1 \
+  --confirm-cohort-labels
+cat data/manifests/450k_cohort_v1/audit.json
+cat data/manifests/450k_cohort_v1/label_provenance.json
+nano data/manifests/450k_cohort_v1/config.json
+```
+
+Review the five diagnoses and exclusions before setting `metadata_reviewed` to `true`. Each sample must appear in its corresponding `.samples` list and beta matrix. Non-primary samples, conflicting patient labels, duplicate patients, and insufficiently represented classes are excluded and logged. Source sample IDs and assigned diagnoses are saved in `450k_cohort_v1_label_evidence.tsv`. EPIC/`all.samples` is deliberately not supported by this labeling command and needs a separate review, given its mixed sample identifiers.
+
+Then prepare the train-only panel and ridge baseline:
+
+```bash
+export R_LIBS_USER="$PWD/data/r-library"
+unset R_HOME
+mkdir -p logs
+set -o pipefail
+python prepare_methylation.py --config data/manifests/450k_cohort_v1/config.json \
+  --n-clients 3 2>&1 | tee logs/methylation_450k_prepare.log
+python evaluate_methylation.py ridge --data-dir data/methylation_450k_v1 \
+  --output runs/methylation_450k/ridge_validation
+```
+
+Continue with VM steps 8–10 below for GPU smoke training, full FL training, and validation/test comparison. Use a new output path if an experiment directory already exists. Final accuracy requires actually running the aggregated MedGemma checkpoint and ridge on the same held-out patients; preparation or synthetic test scores are not a substitute.
+
 ## What this experiment does
 
 1. Read a **reviewed patient/sample manifest** and TARGET beta matrices (one platform per experiment).
