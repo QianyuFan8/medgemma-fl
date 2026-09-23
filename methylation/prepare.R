@@ -29,7 +29,11 @@ root <- if (is.null(cfg$matrix_root)) dirname(normalizePath(cfg$metadata)) else 
 paths <- ifelse(grepl("^/", m$matrix_file), m$matrix_file, file.path(root, m$matrix_file))
 if (any(!file.exists(paths))) stop("Matrix not found; check matrix_root: ", paste(unique(paths[!file.exists(paths)]), collapse=", "))
 m$matrix_file <- normalizePath(paths)
-covariates <- if (is.null(cfg$covariates)) character() else cfg$covariates
+# jsonlite parses JSON [] as list(), which is not a valid data.frame index.
+# Both an omitted field and an explicit empty array mean no covariates.
+covariates <- if (!length(cfg$covariates)) character() else cfg$covariates
+if (!is.character(covariates) || anyNA(covariates) || any(!nzchar(covariates)))
+  stop("covariates must be an array of column-name strings or an empty array.")
 if (!all(covariates %in% names(m)) || anyNA(m[, covariates, drop=FALSE])) stop("Missing covariates.")
 
 # Deterministic patient split BEFORE any fitted feature filtering; one sample per patient.
