@@ -1,9 +1,9 @@
-# Mixed-platform seven-class experiment: data audit stage
+# Mixed-platform seven-class experiment
 
 This is a new experiment, not a replacement for the five-class experiment.
-The current entry point audits input headers and cohort membership only. It does
-not yet prepare local panels, train a seven-class model, or evaluate mixed panels.
-Do not use the existing single-panel preparation/evaluation commands for this experiment.
+Use `prepare_mixed_methylation.py` for local panels, not the single-panel exporter.
+The existing training entry point and MedGemma evaluator support these exported
+local panels. Pooled ridge/compare mode deliberately rejects mixed-panel tasks.
 
 ## Design
 
@@ -59,8 +59,89 @@ patient identifiers. Confirm:
    Cross-cohort labels must be reconciled; one patient must not span sites/splits.
 5. Approve final eligible counts before fixing site allocation and splits.
 
-No training configuration is emitted at this stage. Local-panel preparation,
-seven-class export, and multi-panel evaluation follow after this audit is reviewed.
-Never fit limma on validation or test labels. Use new processed-data and result
-directories for those later stages, leaving `data/methylation_450k_v1` and
-`runs/methylation_450k` unchanged.
+## Prepare and train after the audit
+
+The user authorized exclusion of unresolved identifiers and cohort-membership
+labels. These are recorded assertions, not independently verified diagnoses.
+The explicit flags below implement that decision. All exclusions are retained in
+`exclusions.json`. Cross-cohort conflicts and cross-platform duplicate candidate
+patients still stop preparation; they are not silently relabeled.
+
+Within each diagnosis, 450K patients are shuffled and alternated between sites 1
+and 2. EPIC patients go to site 3. Before site assignment, one eligible sample per
+patient is selected deterministically (type 01, then 09, then 03, then sample ID).
+Each site independently splits approximately 60/20/20 by diagnosis, fits QC and
+limma on training patients, and freezes 100 CpGs for validation/test. All prompts
+offer seven labels. The 450K sites are similar to each other; the EPIC site creates
+the strong label/platform heterogeneity. CCSK local training counts remain tiny.
+
+```bash
+export R_LIBS_USER="$PWD/data/r-library"
+unset R_HOME
+mkdir -p logs
+set -o pipefail
+
+python prepare_mixed_methylation.py \
+  --audit-dir data/manifests/mixed_7class_v1_audit \
+  --output data/methylation_mixed_7class_v1 \
+  --confirm-cohort-labels --exclude-unresolved \
+  2>&1 | tee logs/methylation_mixed_7class_prepare_v1.log
+```
+
+Preparation prints post-QC counts by site, split, and diagnosis. It loads one site
+at a time, but still requires enough host RAM for dense methylation matrices.
+If fewer than 100 CpGs meet FDR < 0.05 or class counts fail QC, preparation stops;
+there is no nonsignificant fallback. A partial run can use `--resume` with the same
+arguments to skip completed R stages. If a failed R stage left a partial output,
+use a new experiment directory rather than overwriting it. Do not train unless
+preparation succeeds and `task.json` exists.
+
+On the existing A100 80GB VM, the following uses the same three-concurrent-client
+GPU mapping as the five-class experiment. Available GPU memory is still required.
+This starts a fresh model, not the old five-class checkpoint.
+
+```bash
+python job.py --task methylation \
+  --data_dir data/methylation_mixed_7class_v1/clients \
+  --n_clients 3 --gpu '[0],[0],[0]' \
+  --num_rounds 3 --num_train_epochs 1 \
+  --lora_aggregation naive --global_lora_rank 16 --site_lora_ranks 16,16,16 \
+  --per_device_train_batch_size 1 --per_device_eval_batch_size 1 \
+  --gradient_accumulation_steps 4 --max_seq_length 4096 \
+  --workspace runs/methylation_mixed_7class/fl_gpu0_v1 \
+  2>&1 | tee logs/methylation_mixed_7class_fl_v1.log
+```
+
+## Global validation with frozen local panels
+
+After successful training, confirm the checkpoint exists, then evaluate:
+
+```bash
+MIXED_MODEL=runs/methylation_mixed_7class/fl_gpu0_v1/medgemma/server/simulate_job/app_server/FL_global_model.pt
+test -f "$MIXED_MODEL" && python evaluate_methylation.py medgemma \
+  --data-dir data/methylation_mixed_7class_v1 \
+  --model-path "$MIXED_MODEL" \
+  --output runs/methylation_mixed_7class/validation_v1
+```
+
+Each patient retains the source site's panel, while every prediction uses the
+seven-class vocabulary. Metrics include pooled seven-class results and per-site
+results (site macro metrics cover classes actually present there). Only evaluate
+test after freezing settings, using `--split test` and a fresh output directory.
+Do not compare seven-class scores directly with the old five-class experiment as
+if they measured only the effect of non-IID partitioning: the task/cohort changed.
+
+The old five-class data and results remain unchanged. Local selection is simulated
+on one VM; this is not a deployment of private feature selection across real hospitals.
+Patient-level files, local panels, and checkpoints should remain out of Git.
+
+## Tests
+
+```bash
+python -m unittest discover -s tests -p 'test_m*.py'
+python tests/smoke_mixed.py
+```
+
+Synthetic CPU tests exercise real three-site limma preparation, seven-class export,
+deduplication, site/panel consistency and patient-disjoint checks. GPU training
+and real mixed-cohort performance must be verified on the VM.

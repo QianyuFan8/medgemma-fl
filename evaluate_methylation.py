@@ -50,6 +50,11 @@ def main():
         raise FileExistsError(out)
     task = json.loads((root / "task.json").read_text())
     reference = json.loads((root / f"{args.split}.json").read_text())
+    if task.get('panel_mode') == 'local':
+        if args.mode != 'medgemma':
+            p.error('Local-panel tasks currently support MedGemma evaluation only, not pooled ridge/compare')
+        from methylation_validate import validate_clients
+        validate_clients(root/'clients', task['n_clients'])
     if args.mode == "ridge":
         env = os.environ.copy(); env.pop("R_HOME", None)
         if args.r_library:
@@ -81,6 +86,17 @@ def main():
             predictions.append({"patient_id": row["patient_id"], "truth": row["label_name"],
                                 "prediction": prediction, "raw_response": raw})
         results = evaluate_rows(predictions, reference, task["classes"])
+        if task.get('panel_mode') == 'local':
+            site_by_patient = {r['patient_id']: r['site_id'] for r in reference}
+            results['by_site'] = {}
+            for site in task['site_panels']:
+                subset = [r for r in predictions if site_by_patient[r['patient_id']] == site]
+                present = sorted({r['truth'] for r in subset})
+                metric = classification_metrics([r['truth'] for r in subset],
+                                                [r['prediction'] for r in subset], present)
+                metric['invalid_predictions'] = sum(r['prediction'] not in task['classes'] for r in subset)
+                metric['macro_scope'] = 'classes_present_at_site; predictions still use all seven classes'
+                results['by_site'][site] = metric
         out.mkdir(parents=True)
         with (out / "predictions.csv").open("w") as f:
             writer = csv.DictWriter(f, fieldnames=list(predictions[0]))
