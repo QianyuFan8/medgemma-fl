@@ -111,8 +111,8 @@ def _build_training_args(args, output_dir: str, do_eval: bool) -> SFTConfig:
     if args.max_steps is not None:
         training_args["max_steps"] = args.max_steps
     if args.task == "methylation":
-        training_args.pop("warmup_steps", None)
-        training_args["warmup_ratio"] = 0.03
+        # Keep warmup_steps above: the VM's Transformers/TRL accepts a
+        # fractional value here and no longer accepts warmup_ratio.
         training_args["max_length"] = args.max_seq_length
     if do_eval:
         training_args["eval_strategy"] = "steps"
