@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from prepare_mixed_methylation import CLASSES, allocate, export
+from prepare_mixed_methylation import CLASSES, SITE_CLASSES, PARTITION, allocate, export, check_partition
 from methylation_validate import validate_clients
 
 
@@ -20,9 +20,19 @@ class MixedPreparationTests(unittest.TestCase):
         rows.append(dict(rows[0], sample_id='duplicate-03A', sample_type='03'))
         sites, duplicates = allocate(rows, 42)
         self.assertEqual(len(duplicates), 1)
-        self.assertEqual(len(sites['site-1']), 30)
+        self.assertEqual(len(sites['site-1']), 24)
+        self.assertEqual(len(sites['site-2']), 36)
         self.assertEqual(len(sites['site-3']), 24)
         self.assertEqual(allocate(rows, 42), (sites, duplicates))
+        for name, group in sites.items():
+            self.assertEqual({r['proposed_diagnosis'] for r in group}, set(SITE_CLASSES[name]))
+        ids = [r['patient_id'] for group in sites.values() for r in group]
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_reject_old_resume(self):
+        with self.assertRaisesRegex(ValueError, 'new output directory'):
+            check_partition({'seed': 42})
+        check_partition({'partition': PARTITION, 'site_classes': SITE_CLASSES})
 
     def test_local_panels_and_guards(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -30,7 +40,7 @@ class MixedPreparationTests(unittest.TestCase):
             for n in range(1, 4):
                 local = root/'local'/f'site-{n}'
                 local.mkdir(parents=True)
-                classes = ['ALL', 'RT'] if n == 3 else ['AML', 'CCSK', 'NBL', 'OS', 'WT']
+                classes = SITE_CLASSES[f'site-{n}']
                 for split in ('train', 'validation', 'test'):
                     with (local/f'{split}.csv').open('w') as f:
                         w = csv.writer(f)
