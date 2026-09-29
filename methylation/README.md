@@ -2,11 +2,15 @@
 
 ## New experiment: eight classes, shared CpGs, TARGET + COMET RMS
 
-For the **450K + EPIC + COMET RMS**, common-panel, limma **top 1%** experiment,
+For the **450K + EPIC + COMET RMS**, common-panel, limma **top 0.1%** pilot (`--top-fraction 0.001`),
 follow [SHARED_PANEL.md](SHARED_PANEL.md). It includes DNAnexus downloads, metadata
 review, one fixed panel, matched IID/non-IID splits, context-length checks,
 federated training and ridge comparison. Do not use the older top-100 or
 local-panel preparation commands below for this experiment.
+
+Already prepared the top 1% experiment? After pulling the update, resume at
+SHARED_PANEL.md Section 4, then rerun Sections 5 and 6. New `top0p1pct` output
+directories preserve the old experiment; downloading the matrices again is not needed.
 
 The old five-class and seven-class entry points remain available for reproducing
 previous experiments. New outputs must use new directory names.

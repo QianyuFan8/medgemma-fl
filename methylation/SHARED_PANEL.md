@@ -1,10 +1,24 @@
-# Eight-class shared-panel experiment: TARGET + COMET RMS
+# Eight-class shared-panel experiment: TARGET + COMET RMS (top 0.1%)
 
 This workflow adds RMS as the eighth diagnosis. It does not overwrite the earlier
 five-class or seven-class local-panel experiments. Run commands from the repository
 root on the VM after committing/pushing the code on the Mac and pulling it on the VM.
 All real patient data, derived feature files, prompts, logs and checkpoints belong
 under the ignored `data/`, `logs/` and `runs/` directories, not in GitHub.
+
+## Resuming after the earlier top 1% preparation
+
+After pulling this revision on the VM, keep the existing downloads and
+`data/manifests/shared_8class_v1_audit`. If inputs and the reviewed audit have not
+changed, restart at **Section 4**, then run Sections 5 and 6 before smoke training.
+Do not rerun the audit into its existing directory. All new prepared-data, log and
+result paths include `top0p1pct`, preserving the earlier 1% experiment.
+The commands explicitly use `--top-fraction 0.001` (0.1%, not 1% or 10%).
+The Python CLI default remains 0.01 for compatibility; do not omit this argument.
+Keep the previous seed, eligibility/QC settings and input files unchanged for a
+matched comparison. The commands use the original default seed, 20260929; if your
+previous config used a different seed or QC settings, reuse those instead.
+This is a smaller-panel pilot, not evidence that 1% has no additional benefit.
 
 ## Design and interpretation
 
@@ -32,9 +46,11 @@ under the ignored `data/`, `logs/` and `runs/` directories, not in GitHub.
    training features. Test all remaining common features using limma's moderated
    omnibus diagnosis test. **There is no 20,000-feature variance cap.** Rank by
    raw p-value, with CpG ID breaking ties. Select
-   `ceil(top_fraction * number_of_tested_CpGs)`; default `top_fraction=0.01`.
+   `ceil(top_fraction * number_of_tested_CpGs)`; this guide explicitly uses
+   `top_fraction=0.001` (top 0.1%).
    BH FDR is reported, but **there is no FDR cutoff in this new top-percent mode**.
-   For example, 400,000 tested features produce 4,000 selected features, not 100.
+   For example, 400,000 tested features produce 400 selected features. The current
+   dataset is expected to yield about 436; verify the actual selection summary.
 8. Freeze the panel and training medians; distribute identical feature artifacts
    to every client. All training/evaluation prompts use all eight options.
 
@@ -184,14 +200,15 @@ Only use the confirmation flags after reviewing the audit and identity issue abo
 ```bash
 python prepare_shared_methylation.py prepare \
   --audit-dir data/manifests/shared_8class_v1_audit \
-  --output data/methylation_shared_8class_v1 \
+  --output data/methylation_shared_8class_top0p1pct_v1 \
   --confirm-reviewed-labels \
   --confirm-patient-identity \
   --exclude-unresolved \
-  --top-fraction 0.01 \
-  2>&1 | tee logs/shared_8class_v1_prepare.log
-cat data/methylation_shared_8class_v1/selection_summary.json
-head -n 6 data/methylation_shared_8class_v1/features.tsv
+  --top-fraction 0.001 \
+  --seed 20260929 \
+  2>&1 | tee logs/shared_8class_top0p1pct_v1_prepare.log
+cat data/methylation_shared_8class_top0p1pct_v1/selection_summary.json
+head -n 6 data/methylation_shared_8class_top0p1pct_v1/features.tsv
 ```
 
 The `--exclude-unresolved` flag explicitly excludes unresolved records reported
@@ -206,7 +223,7 @@ Important artifacts:
 | `features.tsv` | Ordered CpG IDs, training medians, limma p-values and BH FDR |
 | `features.json` | Machine-readable panel, ordered-ID hash, TSV hash and preprocessing |
 | `FEATURES.md` | Human-readable instructions for using the fixed panel |
-| `eligible_cpgs.tsv` | Full tested universe defining the 1% denominator |
+| `eligible_cpgs.tsv` | Full tested universe defining the top-percent denominator |
 | `limma_training_only.tsv` | Full training-only limma results |
 | `splits.tsv`, `sample_audit.tsv` | Private patient splits and sample-level beta QC |
 | `train.csv`, `validation.csv`, `test.csv` | Same rounded beta values for ridge and MedGemma |
@@ -219,13 +236,13 @@ automatically privacy-safe or approved for public release.
 
 ```bash
 python prepare_shared_methylation.py export \
-  --prepared data/methylation_shared_8class_v1 \
-  --partition iid --output data/methylation_shared_8class_iid_v1
+  --prepared data/methylation_shared_8class_top0p1pct_v1 \
+  --partition iid --output data/methylation_shared_8class_top0p1pct_iid_v1
 python prepare_shared_methylation.py export \
-  --prepared data/methylation_shared_8class_v1 \
-  --partition non-iid --output data/methylation_shared_8class_noniid_v1
-cat data/methylation_shared_8class_iid_v1/site_counts.json
-cat data/methylation_shared_8class_noniid_v1/site_counts.json
+  --prepared data/methylation_shared_8class_top0p1pct_v1 \
+  --partition non-iid --output data/methylation_shared_8class_top0p1pct_noniid_v1
+cat data/methylation_shared_8class_top0p1pct_iid_v1/site_counts.json
+cat data/methylation_shared_8class_top0p1pct_noniid_v1/site_counts.json
 ```
 
 - IID: shuffle within each diagnosis and distribute round-robin across three sites.
@@ -260,35 +277,29 @@ and all eight options, even when a site has never seen some diagnoses.
 
 ## 6. Check actual input length BEFORE training
 
+For approximately 436 features, the expected length is roughly 8,800 tokens,
+not the earlier 87,112 tokens. This is an estimate; the actual tokenizer check
+below is authoritative. Start with a 10,240-token budget, not the old 4,096 or
+90,112 setting:
+
 ```bash
+export METHYL_CONTEXT=10240
 python check_methylation_context.py \
-  --data-dir data/methylation_shared_8class_iid_v1 \
-  --max-seq-length 4096
-```
-
-This loads only the model processor/config, not the model weights, and counts
-actual formatted tokens. It is expected to reject 4096 if thousands of CpGs are
-selected. Read `required_max_seq_length` and `model_context_capacity`. If necessary,
-choose a larger supported budget, set the shell variable below, and rerun the check.
-The two layouts have identical input text, so the same context budget applies.
-
-```bash
-read -r -p "Reviewed supported context budget (integer): " METHYL_CONTEXT
-```
-
-```bash
-python check_methylation_context.py \
-  --data-dir data/methylation_shared_8class_iid_v1 \
+  --data-dir data/methylation_shared_8class_top0p1pct_iid_v1 \
   --max-seq-length "$METHYL_CONTEXT"
 ```
 
-**Supported context is not a GPU memory guarantee.** Thousands of textual CpGs can
-make training far more expensive than the old 100-feature run. Three long-context
-clients may not fit concurrently on a single A100 80GB. Never silently keep only
-the first 100 features or truncate the prompt. If the full 1% cannot fit, stop and
-agree on an alternative representation or experimental feature budget with the
-mentor. Top 5% is supported via `--top-fraction 0.05` in a separate preparation;
-it is even more expensive and must not be selected based on test performance.
+This loads only the processor/config, not model weights. Continue only if the
+check passes. If it fails, inspect `required_max_seq_length` and
+`model_context_capacity`, choose a supported budget and rerun. Both layouts use
+identical input text, so the same budget applies. Re-export `METHYL_CONTEXT`
+when opening a new terminal, and use it for both training and evaluation.
+
+**Supported context is not a GPU memory guarantee.** Even this smaller panel must
+pass the three-client smoke test on the single A100. Never silently truncate the
+prompt. Top 1% (`--top-fraction 0.01`) and top 5% (`--top-fraction 0.05`) remain
+available as separate experiments; preserve their outputs and do not choose the
+feature budget based on test performance.
 
 ## 7. Federated smoke run, then matched full runs
 
@@ -308,14 +319,14 @@ METHYL_GPU_MAP='[0],[0],[0]'
 
 ```bash
 python job.py --task methylation \
-  --data_dir data/methylation_shared_8class_iid_v1/clients \
+  --data_dir data/methylation_shared_8class_top0p1pct_iid_v1/clients \
   --n_clients 3 --num_rounds 1 --max_steps 1 \
   --max_seq_length "$METHYL_CONTEXT" \
   --per_device_train_batch_size 1 --per_device_eval_batch_size 1 \
   --global_lora_rank 16 --site_lora_ranks 16,16,16 \
   --gpu "$METHYL_GPU_MAP" \
-  --workspace runs/shared_8class/iid_smoke_v1 \
-  2>&1 | tee logs/shared_8class_iid_smoke_v1.log
+  --workspace runs/shared_8class_top0p1pct/iid_smoke_v1 \
+  2>&1 | tee logs/shared_8class_top0p1pct_iid_smoke_v1.log
 ```
 
 After successful smoke training, run each layout **from the same base model**, not
@@ -324,15 +335,15 @@ by continuing the IID checkpoint into the non-IID run. Use identical hyperparame
 ```bash
 for layout in iid noniid; do
   python job.py --task methylation \
-    --data_dir "data/methylation_shared_8class_${layout}_v1/clients" \
+    --data_dir "data/methylation_shared_8class_top0p1pct_${layout}_v1/clients" \
     --n_clients 3 --num_rounds 3 --num_train_epochs 2 \
     --max_seq_length "$METHYL_CONTEXT" \
     --per_device_train_batch_size 1 --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps 4 \
     --global_lora_rank 16 --site_lora_ranks 16,16,16 \
     --gpu "$METHYL_GPU_MAP" \
-    --workspace "runs/shared_8class/${layout}_fl_v1" \
-    2>&1 | tee "logs/shared_8class_${layout}_fl_v1.log"
+    --workspace "runs/shared_8class_top0p1pct/${layout}_fl_v1" \
+    2>&1 | tee "logs/shared_8class_top0p1pct_${layout}_fl_v1.log"
   if [ "${PIPESTATUS[0]}" -ne 0 ]; then break; fi
 done
 ```
@@ -348,20 +359,20 @@ accuracy. It is a centralized benchmark, not federated ridge.
 
 ```bash
 python evaluate_methylation.py ridge \
-  --data-dir data/methylation_shared_8class_iid_v1 \
-  --output runs/shared_8class/ridge_validation_v1
+  --data-dir data/methylation_shared_8class_top0p1pct_iid_v1 \
+  --output runs/shared_8class_top0p1pct/ridge_validation_v1
 
 for layout in iid noniid; do
   python evaluate_methylation.py medgemma \
-    --data-dir "data/methylation_shared_8class_${layout}_v1" \
-    --model-path "runs/shared_8class/${layout}_fl_v1/medgemma/server/simulate_job/app_server/FL_global_model.pt" \
+    --data-dir "data/methylation_shared_8class_top0p1pct_${layout}_v1" \
+    --model-path "runs/shared_8class_top0p1pct/${layout}_fl_v1/medgemma/server/simulate_job/app_server/FL_global_model.pt" \
     --max-seq-length "$METHYL_CONTEXT" \
-    --output "runs/shared_8class/${layout}_validation_v1" || break
+    --output "runs/shared_8class_top0p1pct/${layout}_validation_v1" || break
   python evaluate_methylation.py compare \
-    --data-dir "data/methylation_shared_8class_${layout}_v1" \
-    --ridge-predictions runs/shared_8class/ridge_validation_v1/predictions.csv \
-    --medgemma-predictions "runs/shared_8class/${layout}_validation_v1/predictions.csv" \
-    --output "runs/shared_8class/${layout}_comparison_validation_v1" || break
+    --data-dir "data/methylation_shared_8class_top0p1pct_${layout}_v1" \
+    --ridge-predictions runs/shared_8class_top0p1pct/ridge_validation_v1/predictions.csv \
+    --medgemma-predictions "runs/shared_8class_top0p1pct/${layout}_validation_v1/predictions.csv" \
+    --output "runs/shared_8class_top0p1pct/${layout}_comparison_validation_v1" || break
 done
 ```
 
@@ -373,19 +384,19 @@ Only after finalizing both models/hyperparameters using validation:
 
 ```bash
 python evaluate_methylation.py ridge --split test \
-  --data-dir data/methylation_shared_8class_iid_v1 \
-  --output runs/shared_8class/ridge_test_v1
+  --data-dir data/methylation_shared_8class_top0p1pct_iid_v1 \
+  --output runs/shared_8class_top0p1pct/ridge_test_v1
 for layout in iid noniid; do
   python evaluate_methylation.py medgemma --split test \
-    --data-dir "data/methylation_shared_8class_${layout}_v1" \
-    --model-path "runs/shared_8class/${layout}_fl_v1/medgemma/server/simulate_job/app_server/FL_global_model.pt" \
+    --data-dir "data/methylation_shared_8class_top0p1pct_${layout}_v1" \
+    --model-path "runs/shared_8class_top0p1pct/${layout}_fl_v1/medgemma/server/simulate_job/app_server/FL_global_model.pt" \
     --max-seq-length "$METHYL_CONTEXT" \
-    --output "runs/shared_8class/${layout}_test_v1" || break
+    --output "runs/shared_8class_top0p1pct/${layout}_test_v1" || break
   python evaluate_methylation.py compare --split test \
-    --data-dir "data/methylation_shared_8class_${layout}_v1" \
-    --ridge-predictions runs/shared_8class/ridge_test_v1/predictions.csv \
-    --medgemma-predictions "runs/shared_8class/${layout}_test_v1/predictions.csv" \
-    --output "runs/shared_8class/${layout}_comparison_test_v1" || break
+    --data-dir "data/methylation_shared_8class_top0p1pct_${layout}_v1" \
+    --ridge-predictions runs/shared_8class_top0p1pct/ridge_test_v1/predictions.csv \
+    --medgemma-predictions "runs/shared_8class_top0p1pct/${layout}_test_v1/predictions.csv" \
+    --output "runs/shared_8class_top0p1pct/${layout}_comparison_test_v1" || break
 done
 ```
 
