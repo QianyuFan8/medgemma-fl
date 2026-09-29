@@ -251,7 +251,10 @@ def main():
         if args.site_lora_ranks is None:
             args.site_lora_ranks = ",".join([str(args.global_lora_rank)] * n_clients)
         from methylation_validate import validate_clients
-        validate_clients(data_dir, n_clients)
+        task_spec = validate_clients(data_dir, n_clients)
+        if task_spec.get("panel_mode") == "shared":
+            from check_methylation_context import check_context
+            check_context(os.path.dirname(data_dir), args.model_name_or_path, args.max_seq_length)
     site_lora_ranks = _parse_site_lora_ranks(args.site_lora_ranks, n_clients, args.global_lora_rank)
     job_name = "medgemma" if args.lora_aggregation == "naive" else "medgemma-hlora"
     rank_summary = ", ".join(f"{site_name}={rank}" for site_name, rank in zip(client_names, site_lora_ranks))

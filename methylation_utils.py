@@ -10,7 +10,7 @@ def panel_fingerprint(probes):
     return hashlib.sha256(json.dumps(list(probes), separators=(",", ":")).encode()).hexdigest()
 
 
-def make_record(patient_id, diagnosis, probes, values, classes):
+def make_record(patient_id, diagnosis, probes, values, classes, prompt_style="legacy"):
     if len(probes) != len(values) or len(set(probes)) != len(probes):
         raise ValueError("Inconsistent CpG panel")
     if diagnosis not in classes or any(not math.isfinite(v) or not 0 <= v <= 1 for v in values):
@@ -20,6 +20,15 @@ def make_record(patient_id, diagnosis, probes, values, classes):
         "Return exactly one diagnosis code from: " + ", ".join(classes) + ".\n"
         "CpG beta values:\n" + "\n".join(f"{p}: {v:.6f}" for p, v in zip(probes, values))
     )
+    if prompt_style == "pediatric_v1":
+        prompt = (
+            "Classify this pediatric tumor using DNA methylation.\n\n"
+            "[DNA methylation]\n" + "\n".join(f"{p}: {v:.6f}" for p, v in zip(probes, values)) +
+            "\n\nWhat is the most likely diagnosis?\nOptions: " + ", ".join(classes) +
+            ".\nReply with only the diagnosis abbreviation."
+        )
+    elif prompt_style != "legacy":
+        raise ValueError(f"Unknown prompt style: {prompt_style}")
     return {"patient_id": patient_id, "label_name": diagnosis, "prompt": prompt,
             "panel_id": panel_fingerprint(probes), "classes": list(classes)}
 
