@@ -51,7 +51,7 @@ def define_parser():
         "--data_dir",
         type=str,
         default=None,
-        help="Root directory containing site-1, site-2, ... Defaults to ./data or ./data/rnaseq by task.",
+        help="Root directory containing site-1, site-2, ... Defaults to ./data or ./data_rnaseq by task.",
     )
     parser.add_argument(
         "--image_root",

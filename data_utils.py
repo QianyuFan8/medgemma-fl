@@ -29,8 +29,8 @@ from xml.sax.saxutils import escape
 
 DEFAULT_MODEL_NAME_OR_PATH = "google/medgemma-4b-it"
 DEFAULT_EVAL_DATASET_DIR = "CRC-VAL-HE-7K"
-DEFAULT_RNASEQ_DATA_DIR = "./data/rnaseq"
-DEFAULT_RNASEQ_EVAL_FILE = "./data/rnaseq/eval.json"
+DEFAULT_RNASEQ_DATA_DIR = "./data_rnaseq"
+DEFAULT_RNASEQ_EVAL_FILE = "./data_rnaseq/eval.json"
 TASK_HISTOPATHOLOGY = "histopathology"
 TASK_RNASEQ = "rnaseq"
 

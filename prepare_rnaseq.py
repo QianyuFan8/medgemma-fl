@@ -25,6 +25,7 @@ from collections import defaultdict
 
 import numpy as np
 from data_utils import DIAGNOSIS_CLASSES, DIAGNOSIS_TO_INDEX, TASK_RNASEQ, write_label_distribution_svg
+from edger_tmm import log2_tmm_cpm
 
 BATCH_RE = re.compile(r"WU-TARGET-Batch(\d+)-(STRANDED|UNSTRANDED)_RSEM_gene_count", re.IGNORECASE)
 PATIENT_RE = re.compile(r"^TARGET-\d+-([A-Z0-9]+)", re.IGNORECASE)
@@ -146,60 +147,6 @@ def merge_count_matrices(rnaseq_dir: str, diagnoses: dict[str, str]) -> dict:
     }
 
 
-def tmm_norm_factors(counts: np.ndarray, log_ratio_trim: float = 0.3, sum_trim: float = 0.05) -> np.ndarray:
-    """edgeR TMM normalization factors with a product-1 constraint."""
-    library_sizes = np.maximum(counts.sum(axis=0), 1.0)
-    upper_quartiles = np.percentile(counts, 75, axis=0)
-    ref_idx = int(np.argmin(np.abs(upper_quartiles - np.mean(upper_quartiles))))
-    ref_counts = counts[:, ref_idx]
-    ref_lib = library_sizes[ref_idx]
-    factors = np.ones(counts.shape[1], dtype=np.float64)
-
-    for sample_idx in range(counts.shape[1]):
-        if sample_idx == ref_idx:
-            continue
-        obs = counts[:, sample_idx]
-        obs_lib = library_sizes[sample_idx]
-        keep = (obs > 0) & (ref_counts > 0)
-        if int(keep.sum()) < 50:
-            continue
-        obs_k = obs[keep]
-        ref_k = ref_counts[keep]
-        log_r = np.log2((obs_k / obs_lib) / (ref_k / ref_lib))
-        abs_e = 0.5 * np.log2((obs_k / obs_lib) * (ref_k / ref_lib))
-        var = (obs_lib - obs_k) / (obs_lib * obs_k) + (ref_lib - ref_k) / (ref_lib * ref_k)
-        finite = np.isfinite(log_r) & np.isfinite(abs_e) & np.isfinite(var) & (var > 0)
-        log_r, abs_e, var = log_r[finite], abs_e[finite], var[finite]
-        if log_r.size < 50:
-            continue
-        n = log_r.size
-        lo_m = int(np.floor(n * log_ratio_trim))
-        hi_m = int(np.ceil(n * (1.0 - log_ratio_trim)))
-        lo_a = int(np.floor(n * sum_trim))
-        hi_a = int(np.ceil(n * (1.0 - sum_trim)))
-        order_m = np.argsort(log_r)
-        order_a = np.argsort(abs_e)
-        keep_m = np.zeros(n, dtype=bool)
-        keep_a = np.zeros(n, dtype=bool)
-        keep_m[order_m[lo_m:hi_m]] = True
-        keep_a[order_a[lo_a:hi_a]] = True
-        selected = keep_m & keep_a
-        if not np.any(selected):
-            continue
-        weights = 1.0 / var[selected]
-        factors[sample_idx] = 2.0 ** (np.sum(weights * log_r[selected]) / np.sum(weights))
-
-    factors = factors / np.exp(np.mean(np.log(np.maximum(factors, 1e-8))))
-    return factors
-
-
-def log2_tmm_cpm(counts: np.ndarray) -> np.ndarray:
-    factors = tmm_norm_factors(counts)
-    effective_lib = np.maximum(counts.sum(axis=0) * factors, 1.0)
-    cpm = counts / effective_lib * 1e6
-    return np.log2(cpm + 1.0), factors
-
-
 def select_highly_variable_genes(log_cpm: np.ndarray, gene_mask: np.ndarray, n_genes: int) -> np.ndarray:
     variances = np.var(log_cpm[gene_mask], axis=1)
     n_keep = min(n_genes, int(gene_mask.sum()))
@@ -302,9 +249,9 @@ def _public_record(record: dict) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description="Prepare TARGET RNA-seq TMM-CPM shards for federated MedGemma SFT.")
-    parser.add_argument("--rnaseq_dir", type=str, default="./RNAseq", help="Directory with TARGET count matrices.")
-    parser.add_argument("--meta_path", type=str, default="./RNAseq/TARGET_meta.txt", help="Sample diagnosis table.")
-    parser.add_argument("--output_dir", type=str, default="./data/rnaseq", help="Output directory for site shards.")
+    parser.add_argument("--rnaseq_dir", type=str, default="./rawdata/RNAseq", help="Directory with TARGET count matrices.")
+    parser.add_argument("--meta_path", type=str, default="./rawdata/RNAseq/TARGET_meta.txt", help="Sample diagnosis table.")
+    parser.add_argument("--output_dir", type=str, default="./data_rnaseq", help="Output directory for site shards.")
     parser.add_argument("--num_clients", type=int, default=3, help="Number of federated sites (default: 3).")
     parser.add_argument("--n_hvg", type=int, default=200, help="Number of highly variable genes in each prompt.")
     parser.add_argument("--min_count", type=int, default=10, help="Minimum count for a gene to be considered expressed.")
@@ -344,8 +291,8 @@ def main():
     )
     print("Diagnosis counts: " + ", ".join(f"{name}={merged['labels'].count(name)}" for name in DIAGNOSIS_CLASSES))
 
-    log_cpm, factors = log2_tmm_cpm(counts)
-    print(f"TMM factors: min={factors.min():.3f}, median={np.median(factors):.3f}, max={factors.max():.3f}")
+    log_cpm, factors = log2_tmm_cpm(counts, sample_ids=merged["sample_ids"], gene_ids=merged["gene_ids"])
+    print(f"edgePython TMM factors: min={factors.min():.3f}, median={np.median(factors):.3f}, max={factors.max():.3f}")
 
     patient_probe = [
         {"patient_id": patient_id_from_sample(sample_id), "label_name": label_name}

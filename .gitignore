@@ -9,16 +9,23 @@ data/.DS_Store
 .DS_Store
 target_data/processed/*.parquet
 
-# TARGET RNA-seq raw counts/TPM (multi-GB). Do not upload to GitHub.
-/RNAseq/
+# Raw research data: TARGET RNA-seq, PCGP, methylation, COMET RMS (~26 GB).
+# Do not upload to GitHub.
+/rawdata/
 
-# Adapter checkpoints (tens of MB); keep study JSON/SVG under results/
+# Adapter checkpoints (tens of MB); keep study JSON/SVG under results_rnaseq/
 *_FL_global_model.pt
 *.pt
+
+# Archived RNA-seq FL communication logs
+/results_rnaseq/comm_logs/
+/results_rnaseq/comm_logs_balanced_8r2e/
 
 # Local environment and generated files
 /.venv/
 /data/
+/data_rnaseq/
+/data_rnaseq_iid/
 /logs/
 /comm_logs/
 /comm_logs_*/
@@ -28,8 +35,3 @@ __pycache__/
 /job.py.before-nvflare-fix
 /client.py.before-warmup-fix
 .Rhistory
-
-# Local research datasets
-RNAseq/
-methyl/
-PCGP/

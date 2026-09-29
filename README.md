@@ -21,27 +21,34 @@ Weights for [`google/medgemma-4b-it`](https://huggingface.co/google/medgemma-4b-
 
 ## TARGET RNA-seq communication study
 
-This branch fine-tunes MedGemma **text-only** on TARGET diagnosis (`Dx`) labels. Each sample is a prompt with 200 highly variable genes after edgeR-style **TMM** normalization and **log2(CPM+1)**. Federated clients exchange **LoRA A/B factors only** (`modules_to_save` is empty) so bytes-per-round tracks adapter rank, not the frozen 4B base model.
+This branch fine-tunes MedGemma **text-only** on TARGET diagnosis (`Dx`) labels. Each sample is a prompt with 200 highly variable genes after **edgePython TMM** (`calc_norm_factors`) and **log-CPM** (`cpm(log=True, prior_count=1)`). Federated clients exchange **LoRA A/B factors only** (`modules_to_save` is empty) so bytes-per-round tracks adapter rank, not the frozen 4B base model.
 
-Raw count/TPM matrices are **not** in this repository (multi-GB; see `.gitignore` `/RNAseq/`). Adapter checkpoints (`*.pt`) are also ignored. Small study logs and plots for the first non-IID run live under `results/baseline_noniid_3r1e/`.
+Raw count/TPM matrices are **not** in this repository (multi-GB; see `.gitignore` `/rawdata/`). Adapter checkpoints (`*.pt`) are also ignored. Small study logs and plots for the first non-IID run live under `results_rnaseq/baseline_noniid_3r1e/`. Archived adapters and full communication logs from those RNA-seq MedGemma runs are under `results_rnaseq/` (`lora-r4_FL_global_model.pt`, `qlora-r16_FL_global_model.pt`, `comm_logs/`, `comm_logs_balanced_8r2e/`) and are gitignored.
 
 ### Local raw data (not uploaded)
 
-Place Washington University TARGET batch matrices and metadata on the machine (not GitHub):
+All raw research data lives under `rawdata/`, which is gitignored as a whole. Place the Washington University TARGET batch matrices and metadata on the machine (not GitHub):
 
 ```text
-RNAseq/TARGET_meta.txt
-RNAseq/WU-TARGET-Batch01-STRANDED_RSEM_gene_count.*.txt
-...
-RNAseq/WU-TARGET-Batch09-STRANDED_RSEM_gene_count.*.txt
+rawdata/
+├── RNAseq/                 # TARGET counts/TPM + TARGET_meta.txt
+│   ├── TARGET_meta.txt
+│   ├── WU-TARGET-Batch01-STRANDED_RSEM_gene_count.*.txt
+│   ├── ...
+│   └── WU-TARGET-Batch09-STRANDED_RSEM_gene_count.*.txt
+├── PCGP/                   # PCGP harmonized RSEM gene counts (UMAP EDA)
+├── methyl/                 # TARGET 450K / EPIC *_beta.txt (UMAP EDA)
+└── COMET_RMS/              # COMET EPIC RMS beta + metadata (UMAP EDA)
 ```
+
+Only `rawdata/RNAseq/` feeds the federated study. `rawdata/PCGP/`, `rawdata/methyl/`, and `rawdata/COMET_RMS/` are local EDA inputs. The 450K ∩ EPIC ∩ COMET pipeline is `data_processing/prepare_common_methyl_comet.py` (COMET patient tumor only; TARGET-ALL-P3 labeled ALL); tables and UMAP go to `data_processing/outputs/`.
 
 `prepare_rnaseq.py` merges **stranded** Batch01–09, then fills missing samples from **unstranded** tables when present. Unlabeled `WU-TARGET_AML_B*` files are skipped. Metadata columns required: `Sample`, `Dx`.
 
 ### Preprocess and 3-site split
 
 ```bash
-python prepare_rnaseq.py --input_dir ./RNAseq --output_dir ./data/rnaseq
+python prepare_rnaseq.py --rnaseq_dir ./rawdata/RNAseq --output_dir ./data_rnaseq
 ```
 
 Default **non-IID** split groups sequencing batches (a site proxy):
@@ -53,13 +60,13 @@ Default **non-IID** split groups sequencing batches (a site proxy):
 | `site-3` | B07–B09 | local train/val |
 | `eval.json` | held-out patients | global Dx accuracy |
 
-Eight diagnosis classes: ALL, AML, mixed-phenotype acute leukemia (MPAL), neuroblastoma (NBL), osteosarcoma (OS), Wilms tumor (WT), clear cell sarcoma of kidney (CCSK), rhabdoid tumor (RT). `--split_strategy random` writes an IID layout (use a **different** `--output_dir`, e.g. `./data/rnaseq-iid`, so the batch split is not overwritten).
+Eight diagnosis classes: ALL, AML, mixed-phenotype acute leukemia (MPAL), neuroblastoma (NBL), osteosarcoma (OS), Wilms tumor (WT), clear cell sarcoma of kidney (CCSK), rhabdoid tumor (RT). `--split_strategy random` writes an IID layout (use a **different** `--output_dir`, e.g. `./data_rnaseq_iid`, so the batch split is not overwritten).
 
 ![TARGET RNA-seq client train diagnosis distribution](assets/rnaseq_split_label_distribution.svg)
 
 ### Baseline experiment (archived)
 
-Protocol for `results/baseline_noniid_3r1e/`:
+Protocol for `results_rnaseq/baseline_noniid_3r1e/`:
 
 | Setting | Value |
 |---------|--------|
@@ -84,9 +91,9 @@ Global generation accuracy after 3 rounds:
 | LoRA r=32 | 1.85 GB | 0.4364 |
 | QLoRA r=16 | 462 MB | **0.5152** |
 
-![Accuracy vs bytes per round](results/baseline_noniid_3r1e/accuracy_vs_bytes.svg)
+![Accuracy vs bytes per round](results_rnaseq/baseline_noniid_3r1e/accuracy_vs_bytes.svg)
 
-All LoRA ranks collapsed to the ALL majority baseline on the **global** eval set. Local validation accuracy was higher (~0.50–0.62). Site-3 training data contains **no ALL**, so this snapshot does **not** answer non-IID vs IID vs centralized. Use a new `--comm_log_root` for later runs; do not overwrite `results/baseline_noniid_3r1e/`.
+All LoRA ranks collapsed to the ALL majority baseline on the **global** eval set. Local validation accuracy was higher (~0.50–0.62). Site-3 training data contains **no ALL**, so this snapshot does **not** answer non-IID vs IID vs centralized. Use a new `--comm_log_root` for later runs; do not overwrite `results_rnaseq/baseline_noniid_3r1e/`.
 
 ### Reproduce the study
 
@@ -103,7 +110,7 @@ python run_comm_study.py \
 Single job (QLoRA example):
 
 ```bash
-python job.py --task rnaseq --data_dir ./data/rnaseq --num_rounds 3 \
+python job.py --task rnaseq --data_dir ./data_rnaseq --num_rounds 3 \
   --global_lora_rank 16 --site_lora_ranks 16,16,16 --quantized \
   --modules_to_save "" --comm_log_dir ./comm_logs/qlora-r16 \
   --experiment_name qlora-r16 --gpu "[0],[1],[2]"
@@ -113,7 +120,7 @@ Evaluate a saved global adapter on the held-out patients:
 
 ```bash
 python run_evaluation.py --task rnaseq \
-  --eval_file ./data/rnaseq/eval.json \
+  --eval_file ./data_rnaseq/eval.json \
   --tuned_model_path /tmp/nvflare/simulation/qlora-r16/server/simulate_job/app_server/FL_global_model.pt \
   --finetune_only --max_samples 0
 ```
@@ -373,6 +380,6 @@ Useful flags:
 - Official centralized baseline: [fine_tune_with_hugging_face.ipynb](https://github.com/google-health/medgemma/blob/main/notebooks/fine_tune_with_hugging_face.ipynb)
 - MedGemma model: [google/medgemma-4b-it](https://huggingface.co/google/medgemma-4b-it)
 - Training data: [NCT-CRC-HE-100K on Zenodo](https://zenodo.org/records/1214456)
-- TARGET pediatric RNA-seq batches and diagnosis metadata (local `RNAseq/`; not redistributed in this repo)
+- TARGET pediatric RNA-seq batches and diagnosis metadata (local `rawdata/RNAseq/`; not redistributed in this repo)
 - Heterogeneous LoRA reference: [Heterogeneous LoRA for Federated Fine-tuning of On-Device Foundation Models (HetLoRA)](https://research.google/pubs/heterogeneous-lora-for-federated-fine-tuning-of-on-device-foundation-models/)
 - HLoRA reference: [HLoRA: Towards Efficient Federated Fine-Tuning of Large Language Models with Heterogeneous LoRA](https://arxiv.org/abs/2503.00813)
