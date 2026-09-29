@@ -2,7 +2,7 @@
 
 ## DNA methylation research branch
 
-`research/dna-methylation` adds training-only **limma CpG selection → ridge baseline vs text-only federated MedGemma**, based on `main`. See [methylation/README.md](methylation/README.md) for local preparation, server training, evaluation, and limitations. The existing histology task remains the default. This branch does not yet have a GPU-verified methylation fine-tuning result.
+`research/dna-methylation` adds training-only **limma CpG selection → ridge baseline vs text-only federated MedGemma**, based on `main`. See [methylation/README.md](methylation/README.md) for local preparation, server training, evaluation, and limitations. The new [eight-class TARGET + COMET shared-panel workflow](methylation/SHARED_PANEL.md) uses common QC-passing CpGs, limma top-percent selection and matched IID/non-IID experiments. Its preprocessing has synthetic integration tests; real-data GPU training and long-context memory feasibility still require VM verification. Earlier five-class and seven-class entry points are preserved. The existing histology task remains the default.
 
 MedGemma-FL is a research project exploring federated fine-tuning of MedGemma with NVIDIA FLARE and parameter-efficient LoRA/QLoRA training. The intended downstream application is pediatric oncology clinical trial matching.
 

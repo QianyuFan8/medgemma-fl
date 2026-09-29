@@ -1,5 +1,16 @@
 # DNA methylation: limma → ridge versus federated MedGemma
 
+## New experiment: eight classes, shared CpGs, TARGET + COMET RMS
+
+For the **450K + EPIC + COMET RMS**, common-panel, limma **top 1%** experiment,
+follow [SHARED_PANEL.md](SHARED_PANEL.md). It includes DNAnexus downloads, metadata
+review, one fixed panel, matched IID/non-IID splits, context-length checks,
+federated training and ridge comparison. Do not use the older top-100 or
+local-panel preparation commands below for this experiment.
+
+The old five-class and seven-class entry points remain available for reproducing
+previous experiments. New outputs must use new directory names.
+
 This research branch starts from `main`. Existing histology commands retain their default behavior.
 
 ## Current 450K label source: user-confirmed `.samples` cohort membership
