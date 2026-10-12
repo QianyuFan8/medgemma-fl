@@ -33,6 +33,18 @@ def define_parser():
     parser = argparse.ArgumentParser(description="Federated MedGemma QLoRA fine-tuning with FedAvg.")
     parser.add_argument("--task", choices=("histology", "methylation", "subtype"), default="histology")
     parser.add_argument("--max_seq_length", type=int, default=4096)
+    parser.add_argument(
+        "--attn_implementation",
+        choices=("eager", "sdpa", "flash_attention_2"),
+        default=None,
+        help="Attention kernel for clients and server model; default eager (notebook). sdpa for long CpG prompts.",
+    )
+    parser.add_argument(
+        "--sim_threads",
+        type=int,
+        default=None,
+        help="Simulator threads (default: one per client). 1 runs clients one after another to share a single GPU.",
+    )
     parser.add_argument("--n_clients", type=int, default=3, help="Number of federated clients (default: 3).")
     parser.add_argument("--num_rounds", type=int, default=3, help="Federated rounds (default: 3).")
     parser.add_argument(
@@ -219,6 +231,8 @@ def _build_train_args(args, site_data_path: str, image_root: str, report_to: str
         "--lora_rank",
         str(local_lora_rank),
     ]
+    if args.attn_implementation:
+        train_args.extend(["--attn_implementation", args.attn_implementation])
     if args.max_steps is not None:
         train_args.extend(["--max_steps", str(args.max_steps)])
     else:
@@ -325,9 +339,12 @@ def main():
     else:
         gpu_config = ",".join(f"[{idx}]" for idx in range(n_clients))
 
+    if args.attn_implementation:
+        # The server-side persistor model and any child process read this too.
+        os.environ["MEDGEMMA_ATTN_IMPLEMENTATION"] = args.attn_implementation
     env = SimEnv(
         clients=client_names,
-        num_threads=n_clients,
+        num_threads=args.sim_threads or n_clients,
         gpu_config=gpu_config,
         workspace_root=os.path.abspath(args.workspace),
     )

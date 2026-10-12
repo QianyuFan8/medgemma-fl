@@ -133,6 +133,8 @@ def main():
     parser = argparse.ArgumentParser(description="Federated MedGemma client with QLoRA-based local training.")
     parser.add_argument("--task", choices=("histology", "methylation", "subtype"), default="histology")
     parser.add_argument("--max_seq_length", type=int, default=4096)
+    parser.add_argument("--attn_implementation", choices=("eager", "sdpa", "flash_attention_2"), default=None,
+                        help="Attention kernel; default eager (notebook). Use sdpa for long CpG prompts.")
     parser.add_argument(
         "--data_path", type=str, default="./data/site-1", help="Site data directory containing train.json."
     )
@@ -247,6 +249,7 @@ def main():
         quantized=True,
         device_map={"": 0},
         lora_rank=args.lora_rank,
+        attn_implementation=args.attn_implementation,
     )
     print(f"site={client_name}")
     model.print_trainable_parameters()
