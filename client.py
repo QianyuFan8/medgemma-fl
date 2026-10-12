@@ -30,6 +30,7 @@ import time
 from data_utils import DEFAULT_MODEL_NAME_OR_PATH, format_training_example, resolve_image_path
 from datasets import Image, load_dataset
 from methylation_utils import build_methylation_collator, format_methylation_example
+from subtype_utils import build_multimodal_collator, format_subtype_example
 from lora_utils import build_uniform_lora_rank_map, truncate_global_bank_for_site
 from model import MEDGEMMA_IMAGE_TOKEN_ID, apply_adapter_state, create_peft_medgemma_model, get_adapter_state_dict
 from transformers import AutoProcessor
@@ -53,6 +54,12 @@ def _load_site_split(json_path: str, image_root: str, task: str = "histology"):
     dataset = load_dataset("json", data_files=json_path, split="train")
     if task == "methylation":
         return dataset.map(format_methylation_example)
+    if task == "subtype":
+        dataset = dataset.map(format_subtype_example)
+        if dataset[0].get("image"):
+            dataset = dataset.map(lambda example: {"image": resolve_image_path(example["image"], image_root)})
+            dataset = dataset.cast_column("image", Image())
+        return dataset
     dataset = dataset.map(lambda example: {"image": resolve_image_path(example["image"], image_root)})
     dataset = dataset.cast_column("image", Image())
     return dataset.map(format_training_example)
@@ -110,7 +117,7 @@ def _build_training_args(args, output_dir: str, do_eval: bool) -> SFTConfig:
     )
     if args.max_steps is not None:
         training_args["max_steps"] = args.max_steps
-    if args.task == "methylation":
+    if args.task in ("methylation", "subtype"):
         # Keep warmup_steps above: the VM's Transformers/TRL accepts a
         # fractional value here and no longer accepts warmup_ratio.
         training_args["max_length"] = args.max_seq_length
@@ -124,7 +131,7 @@ def _build_training_args(args, output_dir: str, do_eval: bool) -> SFTConfig:
 
 def main():
     parser = argparse.ArgumentParser(description="Federated MedGemma client with QLoRA-based local training.")
-    parser.add_argument("--task", choices=("histology", "methylation"), default="histology")
+    parser.add_argument("--task", choices=("histology", "methylation", "subtype"), default="histology")
     parser.add_argument("--max_seq_length", type=int, default=4096)
     parser.add_argument(
         "--data_path", type=str, default="./data/site-1", help="Site data directory containing train.json."
@@ -216,14 +223,17 @@ def main():
 
     processor = AutoProcessor.from_pretrained(args.model_name_or_path, trust_remote_code=True, use_fast=False)
     processor.tokenizer.padding_side = "right"
-    collate_fn = (build_methylation_collator(processor, args.max_seq_length)
-                  if args.task == "methylation" else _build_collate_fn(processor))
-
     train_dataset = _load_site_split(train_json, image_root, args.task)
     if len(train_dataset) == 0:
         raise ValueError(
             f"No training samples found in {train_json}. Re-run prepare_data.py with a non-empty site split."
         )
+    if args.task == "methylation" or (args.task == "subtype" and not train_dataset[0].get("image")):
+        collate_fn = build_methylation_collator(processor, args.max_seq_length)
+    elif args.task == "subtype":
+        collate_fn = build_multimodal_collator(processor, args.max_seq_length, MEDGEMMA_IMAGE_TOKEN_ID)
+    else:
+        collate_fn = _build_collate_fn(processor)
     eval_dataset = _load_site_split(validation_json, image_root, args.task) if os.path.isfile(validation_json) else None
 
     print(
