@@ -26,7 +26,7 @@ from collections import Counter
 from typing import Any
 from xml.sax.saxutils import escape
 
-DEFAULT_MODEL_NAME_OR_PATH = "google/medgemma-4b-it"
+DEFAULT_MODEL_NAME_OR_PATH = "google/medgemma-1.5-4b-it"
 DEFAULT_EVAL_DATASET_DIR = "CRC-VAL-HE-7K"
 
 RAW_TISSUE_CODES = ["ADI", "BACK", "DEB", "LYM", "MUC", "MUS", "NORM", "STR", "TUM"]

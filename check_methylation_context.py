@@ -60,7 +60,7 @@ def check_context(root, model_name, max_length):
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--data-dir", required=True)
-    p.add_argument("--model", default="google/medgemma-4b-it")
+    p.add_argument("--model", default="google/medgemma-1.5-4b-it")
     p.add_argument("--max-seq-length", type=int, default=4096)
     a = p.parse_args()
     check_context(a.data_dir, a.model, a.max_seq_length)

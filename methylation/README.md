@@ -136,7 +136,7 @@ Rscript methylation/install.R
 Rscript -e 'stopifnot(all(vapply(c("data.table","jsonlite","limma","glmnet"), requireNamespace, logical(1), quietly=TRUE))); sessionInfo()'
 ```
 
-In each new terminal, reactivate `.venv` and set `R_LIBS_USER` as above. After accepting the license for `google/medgemma-4b-it` on Hugging Face, authenticate:
+In each new terminal, reactivate `.venv` and set `R_LIBS_USER` as above. After accepting the license for `google/medgemma-1.5-4b-it` on Hugging Face, authenticate:
 
 ```bash
 hf auth login

@@ -15,7 +15,7 @@ We plan to explore Gemma Scope 2 as an interpretability and auditing layer to ex
 
 ## Federated MedGemma baseline
 
-This example adapts Google's centralized [MedGemma fine-tuning notebook](https://github.com/google-health/medgemma/blob/main/notebooks/fine_tune_with_hugging_face.ipynb) into an NVFlare federated workflow. It fine-tunes [MedGemma 4B IT](https://huggingface.co/google/medgemma-4b-it) on the [NCT-CRC-HE-100K](https://zenodo.org/records/1214456) histopathology dataset using Hugging Face `TRL`, [QLoRA](https://arxiv.org/abs/2305.14314), and FedAvg across 3 clients.
+This example adapts Google's centralized [MedGemma fine-tuning notebook](https://github.com/google-health/medgemma/blob/main/notebooks/fine_tune_with_hugging_face.ipynb) into an NVFlare federated workflow. It fine-tunes [MedGemma 1.5 4B IT](https://huggingface.co/google/medgemma-1.5-4b-it) on the [NCT-CRC-HE-100K](https://zenodo.org/records/1214456) histopathology dataset using Hugging Face `TRL`, [QLoRA](https://arxiv.org/abs/2305.14314), and FedAvg across 3 clients.
 
 The example is self-contained: data download/prep scripts live next to the FL client, model wrapper, and job recipe.
 
@@ -23,9 +23,9 @@ The fine-tuning data follows the official notebook's setup: [NCT-CRC-HE-100K](ht
 
 ## Before you start: Hugging Face gated model
 
-Weights for [`google/medgemma-4b-it`](https://huggingface.co/google/medgemma-4b-it) are **gated** on Hugging Face. The repo is visible to everyone, but you must accept the license terms and be allowlisted before file downloads work.
+Weights for [`google/medgemma-1.5-4b-it`](https://huggingface.co/google/medgemma-1.5-4b-it) are **gated** on Hugging Face. The repo is visible to everyone, but you must accept the license terms and be allowlisted before file downloads work.
 
-1. Sign in at [huggingface.co](https://huggingface.co) and open [`google/medgemma-4b-it`](https://huggingface.co/google/medgemma-4b-it).
+1. Sign in at [huggingface.co](https://huggingface.co) and open [`google/medgemma-1.5-4b-it`](https://huggingface.co/google/medgemma-1.5-4b-it).
 2. On the model page, follow **Access MedGemma on Hugging Face**: review and agree to the **Health AI Developer Foundations** terms so your account is authorized (this is often instant after you accept).
 3. If you see an error such as *access is restricted and you are not in the authorized list*, you are not allowlisted yet—repeat the access step on the model page while logged into the correct account, or wait if access is pending.
 4. On every machine that downloads or trains the model, use that **same** Hugging Face account: run `huggingface-cli login` or set the `HF_TOKEN` environment variable.
@@ -48,7 +48,7 @@ Weights for [`google/medgemma-4b-it`](https://huggingface.co/google/medgemma-4b-
 
 ## Prerequisites
 
-- **Hugging Face:** allowlisted access and local auth for [`google/medgemma-4b-it`](https://huggingface.co/google/medgemma-4b-it), as described in [Before you start: Hugging Face gated model](#before-you-start-hugging-face-gated-model).
+- **Hugging Face:** allowlisted access and local auth for [`google/medgemma-1.5-4b-it`](https://huggingface.co/google/medgemma-1.5-4b-it), as described in [Before you start: Hugging Face gated model](#before-you-start-hugging-face-gated-model).
 - Python 3.10+
 - A CUDA GPU per client that supports `bfloat16` and has at least 40 GB of memory for MedGemma QLoRA.
 
@@ -175,7 +175,7 @@ Compare the base model against the FL-trained global adapter on prepared validat
 Base model:
 
 ```bash
-python run_inference.py --model_path google/medgemma-4b-it
+python run_inference.py --model_path google/medgemma-1.5-4b-it
 ```
 
 Federated fine-tuned global model:
@@ -244,7 +244,7 @@ python run_evaluation.py \
 
 By default, `run_evaluation.py`:
 
-- uses `google/medgemma-4b-it` as the before-fine-tuning baseline,
+- uses `google/medgemma-1.5-4b-it` as the before-fine-tuning baseline,
 - evaluates on a shuffled subset of **1000 samples**, matching the notebook's default,
 - computes accuracy for both models and reports the delta.
 
@@ -268,7 +268,7 @@ Useful flags:
 ## Sources
 
 - Official centralized baseline: [fine_tune_with_hugging_face.ipynb](https://github.com/google-health/medgemma/blob/main/notebooks/fine_tune_with_hugging_face.ipynb)
-- MedGemma model: [google/medgemma-4b-it](https://huggingface.co/google/medgemma-4b-it)
+- MedGemma model: [google/medgemma-1.5-4b-it](https://huggingface.co/google/medgemma-1.5-4b-it)
 - Training data: [NCT-CRC-HE-100K on Zenodo](https://zenodo.org/records/1214456)
 - Heterogeneous LoRA reference: [Heterogeneous LoRA for Federated Fine-tuning of On-Device Foundation Models (HetLoRA)](https://research.google/pubs/heterogeneous-lora-for-federated-fine-tuning-of-on-device-foundation-models/)
 - HLoRA reference: [HLoRA: Towards Efficient Federated Fine-Tuning of Large Language Models with Heterogeneous LoRA](https://arxiv.org/abs/2503.00813)

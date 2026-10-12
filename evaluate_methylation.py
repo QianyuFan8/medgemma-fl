@@ -39,7 +39,7 @@ def main():
     p.add_argument("--rscript", default="Rscript")
     p.add_argument("--r-library")
     p.add_argument("--model-path", help="MedGemma ID, adapter directory or NVFlare FL_global_model.pt")
-    p.add_argument("--base-model", default="google/medgemma-4b-it")
+    p.add_argument("--base-model", default="google/medgemma-1.5-4b-it")
     p.add_argument("--device", default="cuda")
     p.add_argument("--max-seq-length", type=int, default=4096)
     p.add_argument("--ridge-predictions")

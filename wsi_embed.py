@@ -18,9 +18,13 @@ import numpy as np
 from PIL import Image, ImageFilter
 
 DEFAULT_MODEL = "hf-hub:bioptimus/H-optimus-0"
-# Bioptimus normalization constants (identical for H-optimus-0 and H-optimus-1).
-NORM_MEAN = (0.707223, 0.578729, 0.703617)
-NORM_STD = (0.211883, 0.230117, 0.177517)
+# Ungated fallback while Bioptimus access is pending: Lunit DINO ViT-S trained on TCGA H&E at 20x.
+FALLBACK_MODEL = "hf-hub:1aurent/vit_small_patch16_224.lunit_dino"
+NORMS = {
+    # Bioptimus constants (identical for H-optimus-0 and H-optimus-1).
+    "bioptimus": ((0.707223, 0.578729, 0.703617), (0.211883, 0.230117, 0.177517)),
+    "imagenet": ((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+}
 
 
 def slide_mpp(slide, assume_mpp=None):
@@ -82,14 +86,16 @@ class TileDataset:
         return self.transform(region), i
 
 
-def load_encoder(model_name, device):
+def load_encoder(model_name, device, norm="bioptimus"):
     import timm
     import torch
     from torchvision import transforms
 
-    model = timm.create_model(model_name, pretrained=True, init_values=1e-5, dynamic_img_size=False)
+    kwargs = {"init_values": 1e-5, "dynamic_img_size": False} if "bioptimus" in model_name else {}
+    model = timm.create_model(model_name, pretrained=True, num_classes=0, **kwargs)
     model.eval().to(device)
-    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=NORM_MEAN, std=NORM_STD)])
+    mean, std = NORMS[norm]
+    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=mean, std=std)])
     with torch.inference_mode():
         dim = model(torch.zeros(1, 3, 224, 224, device=device)).shape[-1]
     return model, transform, int(dim)
@@ -123,7 +129,7 @@ def embed_slide(slide_path, out_path, model, transform, dim, args, device):
         f.create_dataset("feats", data=feats)
         f.create_dataset("coords", data=coords)
         f.attrs.update(dict(tile_level0=tile_level0, mpp0=mpp0, target_mpp=args.target_mpp, tile=args.tile,
-                            model=args.model, slide=str(slide_path.resolve())))
+                            model=args.model, norm=args.norm, slide=str(slide_path.resolve())))
     return len(coords), tile_level0, mpp0
 
 
@@ -132,7 +138,10 @@ def main():
     p.add_argument("--slide-dir", required=True)
     p.add_argument("--slides", nargs="*", help="Optional subset of slide stems; default = every .svs in --slide-dir")
     p.add_argument("--output", required=True)
-    p.add_argument("--model", default=DEFAULT_MODEL, help="timm hf-hub id; use hf-hub:bioptimus/H-optimus-1 once approved")
+    p.add_argument("--model", default=DEFAULT_MODEL,
+                   help=f"timm hf-hub id; H-optimus-1 once approved, or the ungated fallback {FALLBACK_MODEL}")
+    p.add_argument("--norm", choices=sorted(NORMS), default=None,
+                   help="Input normalization: bioptimus for H-optimus models (default), imagenet for other encoders")
     p.add_argument("--coords-dir", help="CLAM patches directory with <slide>.h5 coordinate files")
     p.add_argument("--tile", type=int, default=224)
     p.add_argument("--target-mpp", type=float, default=0.5)
@@ -157,7 +166,10 @@ def main():
         missing = wanted - {s.stem for s in slides}
         if missing:
             raise FileNotFoundError(f"Slides not found: {sorted(missing)}")
-    model, transform, dim = load_encoder(args.model, device)
+    if args.norm is None:
+        args.norm = "bioptimus" if "bioptimus" in args.model else "imagenet"
+    model, transform, dim = load_encoder(args.model, device, args.norm)
+    print(f"encoder {args.model}: {dim}-d features, {args.norm} normalization")
     log = []
     for slide_path in slides:
         target = out / f"{slide_path.stem}.h5"

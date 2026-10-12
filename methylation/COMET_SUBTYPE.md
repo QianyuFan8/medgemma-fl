@@ -189,7 +189,7 @@ Baseline 1, zero-shot MedGemma (no training):
 
 ```bash
 python evaluate_subtype.py medgemma --data-dir data/comet_subtype_multimodal_central_v1 \
-  --model-path google/medgemma-4b-it --parse lenient --max-seq-length "$SUBTYPE_CONTEXT" \
+  --model-path google/medgemma-1.5-4b-it --parse lenient --max-seq-length "$SUBTYPE_CONTEXT" \
   --output runs/comet_subtype/zero_shot_multimodal_validation_v1
 ```
 
