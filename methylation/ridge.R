@@ -28,6 +28,11 @@ d <- if(split == "validation") va else read("test")
 p <- as.character(predict(fit, newx=x(d), s=lambda[best], type="class"))
 dir.create(out, recursive=TRUE)
 data.table::fwrite(data.frame(lambda=lambda, validation_balanced_accuracy=scores), file.path(out,"tuning.csv"))
-data.table::fwrite(data.frame(patient_id=d$patient_id, truth=d$diagnosis, prediction=p), file.path(out,"predictions.csv"))
+predictions <- data.frame(patient_id=d$patient_id, truth=d$diagnosis, prediction=p)
+if (length(classes) == 2) {
+  # glmnet binomial "response" is P(second factor level); exported so ROC/PR-AUC can be computed.
+  predictions[[paste0("score_", classes[2])]] <- as.numeric(predict(fit, newx=x(d), s=lambda[best], type="response"))
+}
+data.table::fwrite(predictions, file.path(out,"predictions.csv"))
 saveRDS(list(model=fit, lambda=lambda[best], features=features), file.path(out,"ridge.rds"))
 message("Selected lambda using validation only: ", lambda[best], "; predictions for ", split)

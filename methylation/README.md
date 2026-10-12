@@ -1,5 +1,9 @@
 # DNA methylation: limma → ridge versus federated MedGemma
 
+## COMET RMS subtype (ERMS vs ARMS) with H&E montages
+
+For the Aim 1 pipeline (lenient/strict probe QC, limma top 0.1% for ERMS vs ARMS, H-optimus tile embeddings, ABMIL top-16 montages, and MedGemma zero-shot / centralized / federated LoRA), follow [COMET_SUBTYPE.md](COMET_SUBTYPE.md). It uses the advisor's COMET_RMS.xlsx mapping table and `prepare_comet_subtype.py`; the eight-class workflow below is unchanged.
+
 ## New experiment: eight classes, shared CpGs, TARGET + COMET RMS
 
 For the **450K + EPIC + COMET RMS**, common-panel, limma **top 0.1%** pilot (`--top-fraction 0.001`),

@@ -35,12 +35,21 @@ def validate_clients(data_dir, n_clients):
             raise ValueError('Wrong site panel or label vocabulary')
         if r['label_name'] not in task['classes']:
             raise ValueError('Unknown diagnosis')
-        if task.get('panel_mode') == 'shared':
+        if task.get('panel_mode') in ('shared', 'image'):
             if r.get('site_id') not in task['sites'] or (site and r['site_id'] != site):
                 raise ValueError('Invalid shared-panel site identity')
             actual = re.findall(r'^(cg\d+): ', r['prompt'], flags=re.MULTILINE)
             if actual != task['probes']:
                 raise ValueError('Prompt CpG order differs from shared panel')
+        if task.get('task') == 'comet_subtype':
+            modality = task['modality']
+            if r.get('modality') != modality:
+                raise ValueError('Record modality differs from task modality')
+            has_image = bool(r.get('image'))
+            if has_image != (modality in ('image', 'multimodal')):
+                raise ValueError('Image presence does not match task modality')
+            if has_image and not (root.parent / r['image']).is_file():
+                raise ValueError(f"Missing montage image: {r['image']}")
     for r in heldout:
         check_record(r)
     seen = {r["patient_id"] for r in heldout}
