@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageFilter
 
-DEFAULT_MODEL = "hf-hub:bioptimus/H-optimus-0"
+DEFAULT_MODEL = "hf-hub:bioptimus/H-optimus-1"
 # Ungated fallback while Bioptimus access is pending: Lunit DINO ViT-S trained on TCGA H&E at 20x.
 FALLBACK_MODEL = "hf-hub:1aurent/vit_small_patch16_224.lunit_dino"
 NORMS = {
@@ -139,7 +139,7 @@ def main():
     p.add_argument("--slides", nargs="*", help="Optional subset of slide stems; default = every .svs in --slide-dir")
     p.add_argument("--output", required=True)
     p.add_argument("--model", default=DEFAULT_MODEL,
-                   help=f"timm hf-hub id; H-optimus-1 once approved, or the ungated fallback {FALLBACK_MODEL}")
+                   help=f"timm hf-hub id (default H-optimus-1); H-optimus-0 or the ungated fallback {FALLBACK_MODEL}")
     p.add_argument("--norm", choices=sorted(NORMS), default=None,
                    help="Input normalization: bioptimus for H-optimus models (default), imagenet for other encoders")
     p.add_argument("--coords-dir", help="CLAM patches directory with <slide>.h5 coordinate files")

@@ -12,7 +12,7 @@ Pipeline (run from the repository root on the GPU VM):
 3. `prepare_comet_subtype.py prepare` runs lenient or strict probe QC and the training-only
    limma top-0.1% panel for ERMS vs ARMS (`methylation/prepare.R`).
 4. `wsi_embed.py` tiles each slide (224 px at 0.5 um/px, CLAM-style tissue mask) and embeds
-   tiles with H-optimus-0 (swap to H-optimus-1 when access is granted).
+   tiles with H-optimus-1 (gated; H-optimus-0 is the same-spec fallback).
 5. `abmil_montage.py train` fits gated ABMIL on training slides only; `montage` writes the
    16 highest-attention tiles of every slide as a 4 x 4 montage (896 x 896).
 6. `prepare_comet_subtype.py export` writes a modality/partition layout: methylation, image
@@ -32,13 +32,14 @@ source .venv/bin/activate
 sudo apt-get install -y openslide-tools libopenslide0   # once, needs sudo
 python -m pip install -r requirements-wsi.txt
 python -c 'import openslide, h5py, timm; print("wsi deps ok")'
-hf auth login      # MedGemma; H-optimus-0 downloads without gating
+hf auth login      # MedGemma 1.5 and H-optimus-1 are both gated: accept terms on the same account
 ```
 
-`bioptimus/H-optimus-0` is the open predecessor of H-optimus-1 with the same tile
-specification and normalization constants. Once the H-optimus-1 request is approved,
-rerun step 4 with `--model hf-hub:bioptimus/H-optimus-1` into a new embeddings directory
-and repeat steps 5 to 8 under new output names.
+`bioptimus/H-optimus-1` is the default encoder. `bioptimus/H-optimus-0` (same tile
+specification and normalization constants) and the ungated Lunit DINO ViT-S
+(`--model hf-hub:1aurent/vit_small_patch16_224.lunit_dino`, ImageNet normalization) are
+fallbacks while access is pending; embeddings from different encoders live in separate
+directories and are never mixed.
 
 ## 1. Data on the VM
 
@@ -106,10 +107,10 @@ cat data/comet_subtype_lenient_v1/selection_summary.json
 
 ```bash
 python wsi_embed.py --slide-dir data/raw/comet_slides \
-  --output data/wsi/hoptimus0_embeddings \
-  --model hf-hub:bioptimus/H-optimus-0 --batch-size 128 --num-workers 8 \
-  2>&1 | tee logs/wsi_embed_hoptimus0.log
-cat data/wsi/hoptimus0_embeddings/embedding_log.json | head -20
+  --output data/wsi/hoptimus1_embeddings \
+  --model hf-hub:bioptimus/H-optimus-1 --batch-size 128 --num-workers 8 \
+  2>&1 | tee logs/wsi_embed_hoptimus1.log
+cat data/wsi/hoptimus1_embeddings/embedding_log.json | head -20
 ```
 
 If CLAM is preferred for segmentation, run its `create_patches_fp.py` at patch size 224
@@ -121,15 +122,15 @@ scanner setting. `--max-tiles 4000` caps memory for very large slides.
 
 ```bash
 python abmil_montage.py train \
-  --embeddings data/wsi/hoptimus0_embeddings \
+  --embeddings data/wsi/hoptimus1_embeddings \
   --prepared data/comet_subtype_lenient_v1 \
-  --output runs/comet_subtype/abmil_hoptimus0_v1 --epochs 30 \
-  2>&1 | tee logs/abmil_hoptimus0_v1.log
+  --output runs/comet_subtype/abmil_hoptimus1_v1 --epochs 30 \
+  2>&1 | tee logs/abmil_hoptimus1_v1.log
 python abmil_montage.py montage \
-  --embeddings data/wsi/hoptimus0_embeddings \
-  --abmil runs/comet_subtype/abmil_hoptimus0_v1 \
+  --embeddings data/wsi/hoptimus1_embeddings \
+  --abmil runs/comet_subtype/abmil_hoptimus1_v1 \
   --slide-dir data/raw/comet_slides \
-  --output data/wsi/montages_hoptimus0_v1
+  --output data/wsi/montages_hoptimus1_v1
 ```
 
 `training.json` records train/validation ROC-AUC of the ABMIL image baseline; it is a
@@ -140,7 +141,7 @@ MedGemma level and modality.
 ## 6. Export layouts
 
 ```bash
-P=data/comet_subtype_lenient_v1; M=data/wsi/montages_hoptimus0_v1
+P=data/comet_subtype_lenient_v1; M=data/wsi/montages_hoptimus1_v1
 python prepare_comet_subtype.py export --prepared $P --modality multimodal --n-clients 1 \
   --montage-dir $M --output data/comet_subtype_multimodal_central_v1
 python prepare_comet_subtype.py export --prepared $P --modality multimodal --n-clients 3 --partition iid \
