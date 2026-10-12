@@ -231,7 +231,9 @@ def main():
     if args.task == "methylation" or (args.task == "subtype" and not train_dataset[0].get("image")):
         collate_fn = build_methylation_collator(processor, args.max_seq_length)
     elif args.task == "subtype":
-        collate_fn = build_multimodal_collator(processor, args.max_seq_length, MEDGEMMA_IMAGE_TOKEN_ID)
+        # Read the image soft-token id from the processor so a MedGemma version change cannot desync it.
+        image_token_id = getattr(processor, "image_token_id", None) or MEDGEMMA_IMAGE_TOKEN_ID
+        collate_fn = build_multimodal_collator(processor, args.max_seq_length, image_token_id)
     else:
         collate_fn = _build_collate_fn(processor)
     eval_dataset = _load_site_split(validation_json, image_root, args.task) if os.path.isfile(validation_json) else None

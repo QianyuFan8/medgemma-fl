@@ -1,7 +1,7 @@
 """Evaluate ERMS vs ARMS: ridge baseline, MedGemma (zero-shot / adapter / FL checkpoint), compare.
 
 MedGemma levels share this entry point:
-  Baseline 1 (zero-shot)      --model-path google/medgemma-4b-it --parse lenient
+  Baseline 1 (zero-shot)      --model-path google/medgemma-1.5-4b-it --parse lenient
   Baseline 2 (centralized)    --model-path <FL_global_model.pt from a 1-client job>
   Federated                   --model-path <FL_global_model.pt from a 3-client job>
 Class probabilities come from teacher-forced log-likelihoods of each option, so
@@ -111,7 +111,7 @@ def main():
     p.add_argument("--rscript", default="Rscript")
     p.add_argument("--r-library")
     p.add_argument("--model-path", help="MedGemma ID (zero-shot), adapter directory or NVFlare FL_global_model.pt")
-    p.add_argument("--base-model", default="google/medgemma-4b-it")
+    p.add_argument("--base-model", default="google/medgemma-1.5-4b-it")
     p.add_argument("--device", default="cuda")
     p.add_argument("--max-seq-length", type=int, default=4096)
     p.add_argument("--parse", choices=("strict", "lenient"), default="strict",
