@@ -217,7 +217,16 @@ done
 
 Start every configuration with `--num_rounds 1 --max_steps 1` as a smoke test. Three
 clients on one GPU share memory; on a single A100 80GB the 4-bit base model is loaded
-three times. Repeat the same commands with the image-only and methylation-only exports
+three times.
+
+**Attention kernel.** The notebook default `eager` materialises a full
+sequence x sequence attention matrix per layer; at ~17k tokens (800 CpGs plus an image)
+that is 9 GiB per layer and three concurrent clients run out of memory on one 80 GB GPU.
+Add `--attn_implementation sdpa` to every `job.py` command above and export
+`MEDGEMMA_ATTN_IMPLEMENTATION=sdpa` before `evaluate_subtype.py`, so training and
+evaluation use the same kernel. If memory is still short, `--sim_threads 1` runs the
+clients one after another on the shared GPU, or prepare a smaller panel
+(`--top-fraction 0.0005`, about 400 CpGs) under a new experiment name. Repeat the same commands with the image-only and methylation-only exports
 to isolate each modality.
 
 ## 8. Evaluation

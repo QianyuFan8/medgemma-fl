@@ -96,14 +96,25 @@ def get_model_device_map(local_rank: int | None = None):
     return {"": local_rank}
 
 
+def resolve_attn_implementation(attn_implementation: str | None = None) -> str:
+    """'eager' matches the original notebook; 'sdpa' avoids materialising the full
+    attention matrix and is needed for long CpG prompts (set MEDGEMMA_ATTN_IMPLEMENTATION
+    or pass --attn_implementation)."""
+    choice = attn_implementation or os.environ.get("MEDGEMMA_ATTN_IMPLEMENTATION", "eager")
+    if choice not in ("eager", "sdpa", "flash_attention_2"):
+        raise ValueError(f"Unsupported attention implementation: {choice}")
+    return choice
+
+
 def load_medgemma_base_model(
     model_name_or_path: str = DEFAULT_MODEL_NAME_OR_PATH,
     *,
     quantized: bool = False,
     device_map=None,
+    attn_implementation: str | None = None,
 ):
     model_kwargs = {
-        "attn_implementation": "eager",
+        "attn_implementation": resolve_attn_implementation(attn_implementation),
         "dtype": torch.bfloat16,
         "trust_remote_code": True,
     }
@@ -131,10 +142,12 @@ def create_peft_medgemma_model(
     quantized: bool = False,
     device_map=None,
     lora_rank: int = DEFAULT_LORA_R,
+    attn_implementation: str | None = None,
 ):
     from peft import get_peft_model, prepare_model_for_kbit_training
 
-    base_model = load_medgemma_base_model(model_name_or_path, quantized=quantized, device_map=device_map)
+    base_model = load_medgemma_base_model(model_name_or_path, quantized=quantized, device_map=device_map,
+                                          attn_implementation=attn_implementation)
     if quantized:
         base_model = prepare_model_for_kbit_training(base_model)
     return get_peft_model(base_model, create_lora_config(lora_rank=lora_rank))
