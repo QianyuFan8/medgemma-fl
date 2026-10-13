@@ -156,7 +156,9 @@ def create_peft_medgemma_model(
 def apply_adapter_state(model, adapter_state: dict[str, Any]) -> None:
     from peft import set_peft_model_state_dict
 
-    set_peft_model_state_dict(model, strip_model_prefix(adapter_state))
+    # SCAFFOLD control variates travel alongside the adapter but are not weights.
+    state = {k: v for k, v in strip_model_prefix(adapter_state).items() if not k.startswith("scaffold.")}
+    set_peft_model_state_dict(model, state)
 
 
 def get_adapter_state_dict(model) -> dict[str, torch.Tensor]:
@@ -169,6 +171,8 @@ def get_adapter_state_dict(model) -> dict[str, torch.Tensor]:
 def infer_uniform_lora_rank_from_state_dict(adapter_state: dict[str, Any]) -> int:
     ranks = set()
     for key, value in adapter_state.items():
+        if "scaffold." in key:
+            continue
         if ".lora_A." in key:
             ranks.add(int(value.shape[0]))
         elif ".lora_B." in key:
