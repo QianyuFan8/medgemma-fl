@@ -188,8 +188,24 @@ class FLMethodState:
         return {SCAFFOLD_WIRE_PREFIX + name: self.ci[name].to(self.params[name].dtype).contiguous()
                 for name in self.ci}
 
-    # ---- loss pieces --------------------------------------------------------
+    # ---- gradient terms ------------------------------------------------------
+    @torch.no_grad()
+    def apply_grad_terms(self):
+        """Add d/dw of the FedProx penalty (mu * (w - w_global)) or the SCAFFOLD correction
+        (c - c_i) straight to the gradients, in place, right before the optimizer step.
+        This is exactly the gradient of the loss terms above but needs no autograd graph,
+        which matters at 7e8 trainable parameters (the autograd version OOMs)."""
+        if self.method == "fedprox":
+            for name, p in self.params.items():
+                if p.grad is not None:
+                    p.grad.add_((p - self.anchor[name]).to(p.grad.dtype), alpha=self.mu)
+        elif self.method == "scaffold" and self.correction is not None:
+            for name, p in self.params.items():
+                if p.grad is not None:
+                    p.grad.add_(self.correction[name].to(p.grad.dtype))
+
     def extra_term(self):
+        """Reference (autograd) form of the same terms; used in tests, not in training."""
         if self.method == "fedprox":
             return prox_penalty(self.params, self.anchor, self.mu)
         if self.method == "scaffold" and self.correction is not None:
@@ -223,25 +239,24 @@ class FLMethodState:
         state = self
         from transformers import TrainerCallback
 
-        class _LrSum(TrainerCallback):
+        class _GradTerms(TrainerCallback):
+            # on_pre_optimizer_step runs after gradient clipping and before optimizer.step().
+            def on_pre_optimizer_step(self, args, trainer_state, control, **kw):
+                state.apply_grad_terms()
+
             def on_optimizer_step(self, args, trainer_state, control, optimizer=None, **kw):
                 if optimizer is not None:
                     state.lr_sum += float(optimizer.param_groups[0]["lr"])
 
         class _MethodTrainer(trainer_cls):
             def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-                if state.method == "fedlc":
-                    loss = state.fedlc_loss(self.accelerator.unwrap_model(model), inputs)
-                    outputs = {"loss": loss}  # dict keeps Trainer.prediction_step happy (no logits)
-                else:
-                    loss, outputs = super().compute_loss(model, inputs, return_outputs=True,
-                                                         num_items_in_batch=num_items_in_batch)
-                extra = state.extra_term()
-                if extra is not None:
-                    loss = loss + extra
-                return (loss, outputs) if return_outputs else loss
+                if state.method != "fedlc":
+                    return super().compute_loss(model, inputs, return_outputs=return_outputs,
+                                                num_items_in_batch=num_items_in_batch)
+                loss = state.fedlc_loss(self.accelerator.unwrap_model(model), inputs)
+                return (loss, {"loss": loss}) if return_outputs else loss  # dict keeps prediction_step happy
 
         trainer = _MethodTrainer(**kwargs)
-        if self.method == "scaffold":
-            trainer.add_callback(_LrSum())
+        if self.method in ("fedprox", "scaffold"):
+            trainer.add_callback(_GradTerms())
         return trainer

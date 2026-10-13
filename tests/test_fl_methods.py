@@ -37,6 +37,26 @@ class FLMethodTests(unittest.TestCase):
         self.assertTrue(torch.allclose(self.params["0.weight"].grad, torch.full((2, 3), 0.05)))
         self.assertTrue(set(self.params) == {"0.weight", "0.bias", "1.bias"})
 
+    def test_apply_grad_terms_matches_autograd(self):
+        for method in ("fedprox", "scaffold"):
+            state = FLMethodState(method, mu=0.1)
+            state.start_round(self.model, server_control=None)
+            if method == "scaffold":
+                state.correction = {n: torch.full_like(p, 0.3) for n, p in self.params.items()}
+            with torch.no_grad():
+                self.params["0.weight"].add_(2.0)
+            # autograd reference gradient of the extra term
+            for p in self.params.values():
+                p.grad = None
+            state.extra_term().backward()
+            reference = {n: p.grad.clone() for n, p in self.params.items()}
+            # in-place version on top of a zero gradient
+            for p in self.params.values():
+                p.grad = torch.zeros_like(p)
+            state.apply_grad_terms()
+            for n, p in self.params.items():
+                self.assertTrue(torch.allclose(p.grad, reference[n], atol=1e-6), (method, n))
+
     def test_scaffold_linear_term_gradient(self):
         correction = {name: torch.full_like(p, 0.25) for name, p in self.params.items()}
         term = scaffold_linear_term(self.params, correction)
