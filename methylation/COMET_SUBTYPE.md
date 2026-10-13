@@ -230,6 +230,34 @@ clients one after another on the shared GPU, or prepare a smaller panel
 (`--top-fraction 0.0005`, about 400 CpGs) under a new experiment name. Repeat the same commands with the image-only and methylation-only exports
 to isolate each modality.
 
+### 7.1 Non-IID methods beyond FedAvg
+
+Under label skew the FedAvg global model keeps its ranking (ROC-AUC) but its decision
+boundary drifts toward the majority class. Three client-side methods are available
+through `job.py --fl_method`; the server aggregation stays FedAvg (`naive` or `hlora`):
+
+| `--fl_method` | What changes locally | Extra flags | Notes |
+| --- | --- | --- | --- |
+| `fedprox` | loss += mu/2 · ‖w − w_global‖² over trainable parameters | `--fedprox_mu` (0.05) | cheapest; general drift control |
+| `scaffold` | gradient correction (c − c_i); client control variate updated per round and averaged on the server | — | upload doubles (2 × adapter); requires uniform site ranks; AdamW makes the (x − y)/Σlr update heuristic |
+| `fedlc` | logits of the class options at the first answer token reduced by tau · n_c^(−1/4) with local counts n_c (FedLC, Zhang et al. 2022) | `--fedlc_tau` (1.0) | targets label skew directly; cross-entropy restricted to answer tokens via backbone + lm_head |
+
+Run each on the skew layout (and on iid as a control) with the same schedule, e.g.:
+
+```bash
+python job.py --task subtype --data_dir data/comet_subtype_multimodal_skew08_v1/clients \
+  --n_clients 3 --gpu "[0],[0],[0]" --num_rounds 5 --num_train_epochs 2 \
+  --max_seq_length "$SUBTYPE_CONTEXT" --attn_implementation sdpa \
+  --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 4 \
+  --global_lora_rank 16 --site_lora_ranks 16,16,16 \
+  --fl_method fedprox --fedprox_mu 0.05 \
+  --workspace runs/comet_subtype/fl_multimodal_skew08_fedprox_v1 2>&1 | tee logs/comet_fl_multimodal_skew08_fedprox_v1.log
+```
+
+Smoke-test a new method with `--num_rounds 2 --max_steps 2` first: SCAFFOLD's control
+variate is only exercised from the second round on. Evaluate with `evaluate_subtype.py`
+as before; the checkpoint path pattern is unchanged.
+
 ## 8. Evaluation
 
 ```bash

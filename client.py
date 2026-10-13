@@ -32,6 +32,7 @@ from datasets import Image, load_dataset
 from methylation_utils import build_methylation_collator, format_methylation_example
 from subtype_utils import build_multimodal_collator, format_subtype_example
 from lora_utils import build_uniform_lora_rank_map, truncate_global_bank_for_site
+from fl_methods import METHODS, FLMethodState, split_scaffold_params
 from model import MEDGEMMA_IMAGE_TOKEN_ID, apply_adapter_state, create_peft_medgemma_model, get_adapter_state_dict
 from transformers import AutoProcessor
 from trl import SFTConfig, SFTTrainer
@@ -135,6 +136,10 @@ def main():
     parser.add_argument("--max_seq_length", type=int, default=4096)
     parser.add_argument("--attn_implementation", choices=("eager", "sdpa", "flash_attention_2"), default=None,
                         help="Attention kernel; default eager (notebook). Use sdpa for long CpG prompts.")
+    parser.add_argument("--fl_method", choices=METHODS, default="fedavg",
+                        help="Client-side non-IID method: fedavg (plain), fedprox, scaffold or fedlc.")
+    parser.add_argument("--fedprox_mu", type=float, default=0.05, help="FedProx proximal coefficient mu.")
+    parser.add_argument("--fedlc_tau", type=float, default=1.0, help="FedLC calibration strength tau.")
     parser.add_argument(
         "--data_path", type=str, default="./data/site-1", help="Site data directory containing train.json."
     )
@@ -253,6 +258,9 @@ def main():
     )
     print(f"site={client_name}")
     model.print_trainable_parameters()
+    fl_state = FLMethodState(args.fl_method, mu=args.fedprox_mu, tau=args.fedlc_tau,
+                             classes=train_dataset[0].get("classes"))
+    print(f"site={client_name}, fl_method={args.fl_method}, fedprox_mu={args.fedprox_mu}, fedlc_tau={args.fedlc_tau}")
 
     if args.work_dir is None:
         work_dir = os.path.join(os.getcwd(), "medgemma_checkpoints")
@@ -268,10 +276,17 @@ def main():
         current_round = input_model.current_round
         received_mb = params_size_mb(input_model.params)
         print(f"site={client_name}, round={current_round}, received adapter size: {received_mb:.2f} MB")
-        site_rank_map = build_uniform_lora_rank_map(input_model.params.keys(), args.lora_rank)
-        local_adapter_state = truncate_global_bank_for_site(input_model.params, site_rank_map)
+        adapter_params, server_control = split_scaffold_params(input_model.params)
+        if args.fl_method == "scaffold":
+            bad = [k for k, v in adapter_params.items() if ".lora_A." in k and v.shape[0] != args.lora_rank]
+            if bad:
+                raise ValueError("SCAFFOLD requires every site rank to equal the global LoRA rank (no bank truncation)")
+        site_rank_map = build_uniform_lora_rank_map(adapter_params.keys(), args.lora_rank)
+        local_adapter_state = truncate_global_bank_for_site(adapter_params, site_rank_map)
         apply_adapter_state(model, local_adapter_state)
         model.train()
+        fl_state.start_round(model, server_control, train_labels=list(train_dataset["label_name"]),
+                             tokenizer=processor.tokenizer)
 
         if eval_dataset is not None and args.eval_subset_size > 0 and len(eval_dataset) > args.eval_subset_size:
             round_eval_dataset = eval_dataset.shuffle(seed=42 + current_round).select(range(args.eval_subset_size))
@@ -287,7 +302,8 @@ def main():
         reset_peak_cuda_memory_stats()
         round_start_allocated_mb, round_start_reserved_mb = get_cuda_memory_usage_mb()
 
-        trainer = SFTTrainer(
+        trainer = fl_state.make_trainer(
+            SFTTrainer,
             model=model,
             args=_build_training_args(args, round_output_dir, round_eval_dataset is not None),
             train_dataset=train_dataset,
@@ -315,6 +331,7 @@ def main():
             metrics["neg_eval_loss"] = -eval_loss
 
         params = {"model." + key: value for key, value in get_adapter_state_dict(model).items()}
+        params.update(fl_state.end_round(model))  # SCAFFOLD control variate, empty otherwise
         sent_mb = params_size_mb(params)
         sync_cuda()
         round_runtime_sec = time.perf_counter() - round_start_time

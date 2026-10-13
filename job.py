@@ -40,6 +40,15 @@ def define_parser():
         help="Attention kernel for clients and server model; default eager (notebook). sdpa for long CpG prompts.",
     )
     parser.add_argument(
+        "--fl_method",
+        choices=("fedavg", "fedprox", "scaffold", "fedlc"),
+        default="fedavg",
+        help="Client-side non-IID method. fedprox adds a proximal term, scaffold adds control variates "
+        "(doubles upload, needs uniform ranks), fedlc calibrates class logits by local label counts.",
+    )
+    parser.add_argument("--fedprox_mu", type=float, default=0.05, help="FedProx mu (default 0.05).")
+    parser.add_argument("--fedlc_tau", type=float, default=1.0, help="FedLC tau (default 1.0).")
+    parser.add_argument(
         "--sim_threads",
         type=int,
         default=None,
@@ -233,6 +242,9 @@ def _build_train_args(args, site_data_path: str, image_root: str, report_to: str
     ]
     if args.attn_implementation:
         train_args.extend(["--attn_implementation", args.attn_implementation])
+    if args.fl_method != "fedavg":
+        train_args.extend(["--fl_method", args.fl_method, "--fedprox_mu", str(args.fedprox_mu),
+                           "--fedlc_tau", str(args.fedlc_tau)])
     if args.max_steps is not None:
         train_args.extend(["--max_steps", str(args.max_steps)])
     else:
@@ -273,6 +285,10 @@ def main():
             from check_methylation_context import check_context
             check_context(os.path.dirname(data_dir), args.model_name_or_path, args.max_seq_length)
     site_lora_ranks = _parse_site_lora_ranks(args.site_lora_ranks, n_clients, args.global_lora_rank)
+    if args.fl_method == "scaffold" and any(rank != args.global_lora_rank for rank in site_lora_ranks):
+        raise ValueError("--fl_method scaffold requires every site rank to equal --global_lora_rank")
+    print(f"FL method: {args.fl_method}" + (f" (mu={args.fedprox_mu})" if args.fl_method == "fedprox" else "")
+          + (f" (tau={args.fedlc_tau})" if args.fl_method == "fedlc" else ""))
     job_name = "medgemma" if args.lora_aggregation == "naive" else "medgemma-hlora"
     rank_summary = ", ".join(f"{site_name}={rank}" for site_name, rank in zip(client_names, site_lora_ranks))
     print(f"Client LoRA ranks: {rank_summary}")

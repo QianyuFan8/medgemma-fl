@@ -24,6 +24,7 @@ import math
 from numbers import Real
 
 import torch
+from fl_methods import SCAFFOLD_WIRE_PREFIX
 from lora_utils import get_lora_factor_pairs_and_base, is_lora_factor_key
 
 from nvflare.apis.fl_constant import FLMetaKey
@@ -134,6 +135,8 @@ class _BaseMaxRankLoraAggregator(ModelAggregator):
         self.metric_weighted_sum = {}
         self.metric_total_weight = {}
         self.all_metrics = True
+        self.scaffold_sum = {}
+        self.scaffold_count = 0
 
     def _get_weight(self, model: FLModel) -> float:
         meta = model.meta or {}
@@ -174,9 +177,14 @@ class _BaseMaxRankLoraAggregator(ModelAggregator):
             raise ValueError("All client models must have the same parameter keys for max-rank LoRA aggregation.")
 
         client_lora_state = {}
+        self.scaffold_count += 1
         for key, value in model.params.items():
             tensor = value.detach().cpu().contiguous()
             self.param_references.setdefault(key, tensor)
+            if key.startswith(SCAFFOLD_WIRE_PREFIX):
+                # SCAFFOLD control variates: plain (unweighted) mean over participating clients.
+                self.scaffold_sum[key] = self.scaffold_sum.get(key, 0.0) + tensor.to(dtype=torch.float32)
+                continue
             if is_lora_factor_key(key):
                 client_lora_state[key] = tensor.to(dtype=torch.float32)
             else:
@@ -210,6 +218,11 @@ class _BaseMaxRankLoraAggregator(ModelAggregator):
         for key, value in self.non_lora_weighted_sum.items():
             reference = self.param_references[key]
             aggregated_params[key] = (value / self.total_weight).to(dtype=reference.dtype).contiguous()
+        for key, value in self.scaffold_sum.items():
+            reference = self.param_references[key]
+            aggregated_params[key] = (value / self.scaffold_count).to(dtype=reference.dtype).contiguous()
+        if self.scaffold_sum:
+            self.info(f"SCAFFOLD: averaged {len(self.scaffold_sum)} control-variate tensors over {self.scaffold_count} clients")
 
         if self.client_lora_params:
             lora_keys = list(self.client_lora_params[0][1].keys())
@@ -259,6 +272,8 @@ class _BaseMaxRankLoraAggregator(ModelAggregator):
         self.metric_weighted_sum = {}
         self.metric_total_weight = {}
         self.all_metrics = True
+        self.scaffold_sum = {}
+        self.scaffold_count = 0
 
 
 class NaiveMaxRankAggregator(_BaseMaxRankLoraAggregator):
