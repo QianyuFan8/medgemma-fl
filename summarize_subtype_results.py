@@ -41,7 +41,8 @@ def from_predictions(path, positive="ARMS"):
         other = [c for c in SUBTYPE_CLASSES if c != positive][0]
         scores = [1 - float(r[f"score_{other}"]) for r in rows]
     pred = [r["prediction"] for r in rows]
-    m = subtype_metrics(truth, [p if p in SUBTYPE_CLASSES else "ERMS" for p in pred], scores, SUBTYPE_CLASSES, positive)
+    # A reply that is not exactly ERMS or ARMS stays wrong. It is not scored as ERMS.
+    m = subtype_metrics(truth, pred, scores, SUBTYPE_CLASSES, positive)
     m["invalid_predictions"] = sum(p not in SUBTYPE_CLASSES for p in pred)
     cut, bacc = tuned_threshold(truth, scores, positive)
     m["tuned_threshold"], m["tuned_balanced_accuracy"] = cut, bacc
@@ -63,22 +64,74 @@ def from_abmil(path, split, positive="ARMS"):
 
 
 def from_log(path):
-    """GPU-hours (sum of client train+eval time), peak memory, bytes exchanged."""
+    """Per-site training time and peak memory, plus upload/download per round."""
     if not path or not Path(path).is_file():
         return {}
     text = Path(path).read_text(errors="ignore")
-    train = eval_ = 0.0
-    peak = 0.0
-    rounds, sites = set(), set()
+    train_by_site, eval_by_site, peak_by_site = {}, {}, {}
+    rounds = set()
     for m in LOG_RE.finditer(text):
-        train += float(m["train"]); eval_ += float(m["eval"])
-        peak = max(peak, float(m["peak"])); rounds.add(int(m["round"])); sites.add(m["site"])
-    sent = sum(float(m["mb"]) for m in SENT_RE.finditer(text))
-    recv = sum(float(m["mb"]) for m in RECV_RE.finditer(text))
-    return {"gpu_hours_train": round(train / 3600, 2), "gpu_hours_eval_in_training": round(eval_ / 3600, 2),
-            "peak_cuda_allocated_gb": round(peak / 1024, 1), "rounds": len(rounds), "clients": len(sites),
-            "adapter_mb_sent_total": round(sent, 0), "adapter_mb_received_total": round(recv, 0),
-            "comm_gb_total": round((sent + recv) / 1024, 1)}
+        site, rnd = m["site"], int(m["round"])
+        rounds.add(rnd)
+        train_by_site[site] = train_by_site.get(site, 0.0) + float(m["train"])
+        eval_by_site[site] = eval_by_site.get(site, 0.0) + float(m["eval"])
+        peak_by_site[site] = max(peak_by_site.get(site, 0.0), float(m["peak"]))
+    sent_by_round, recv_by_round = {}, {}
+    for m in SENT_RE.finditer(text):
+        rnd = int(m["round"])
+        sent_by_round[rnd] = sent_by_round.get(rnd, 0.0) + float(m["mb"])
+    for m in RECV_RE.finditer(text):
+        rnd = int(m["round"])
+        recv_by_round[rnd] = recv_by_round.get(rnd, 0.0) + float(m["mb"])
+    train, eval_ = sum(train_by_site.values()), sum(eval_by_site.values())
+    sent, recv = sum(sent_by_round.values()), sum(recv_by_round.values())
+    return {
+        "train_seconds_total": round(train, 1),
+        "gpu_hours_train": round(train / 3600, 2),
+        "gpu_hours_eval_in_training": round(eval_ / 3600, 2),
+        "peak_cuda_allocated_gb": round(max(peak_by_site.values()) / 1024, 1) if peak_by_site else None,
+        "peak_gb_by_site": {s: round(v / 1024, 2) for s, v in sorted(peak_by_site.items())},
+        "train_hours_by_site": {s: round(v / 3600, 2) for s, v in sorted(train_by_site.items())},
+        "rounds": len(rounds) or len(sent_by_round) or len(recv_by_round),
+        "clients": len(train_by_site),
+        "upload_mb_by_round": {str(r): round(sent_by_round[r], 1) for r in sorted(sent_by_round)},
+        "download_mb_by_round": {str(r): round(recv_by_round[r], 1) for r in sorted(recv_by_round)},
+        "adapter_mb_sent_total": round(sent, 1),
+        "adapter_mb_received_total": round(recv, 1),
+        "comm_gb_total": round((sent + recv) / 1024, 2),
+    }
+
+
+def _by_site(mapping, unit):
+    if not mapping:
+        return "—"
+    return "; ".join(f"{site} {value:.2f} {unit}" for site, value in mapping.items())
+
+
+def _by_round(mapping):
+    if not mapping:
+        return "0 MB"
+    values = list(mapping.values())
+    if len(set(values)) == 1:
+        return f"{values[0]:.0f} MB × {len(values)} rounds"
+    return "; ".join(f"round {rnd} {mb:.0f} MB" for rnd, mb in mapping.items())
+
+
+def cost_cells(kind, cost):
+    if not cost:
+        if kind == "abmil":
+            return ["—", "—", "—", "—", "—", "—", "—", "—"]
+        return ["0", "0", "—", "—", "0", "0 MB", "0 MB", "0 GB"]
+    return [
+        f"{cost['train_seconds_total']:.0f} s",
+        f"{cost['gpu_hours_train']:.2f}",
+        _by_site(cost["peak_gb_by_site"], "GB"),
+        _by_site(cost["train_hours_by_site"], "h"),
+        str(cost["rounds"]),
+        _by_round(cost["upload_mb_by_round"]),
+        _by_round(cost["download_mb_by_round"]),
+        f"{cost['comm_gb_total']:.2f} GB",
+    ]
 
 
 def main():
@@ -94,32 +147,51 @@ def main():
     settings = [
         ("01 H-Optimus-1 + ABMIL (image)", "abmil", Path(a.abmil) / "slide_scores.tsv", None),
         ("02 MedGemma 1.5 zero-shot", "pred", runs / f"zero_shot_multimodal_{S}_{T}" / "predictions.csv", None),
-        ("03 MedGemma 1.5 + LoRA centralized", "pred", runs / f"central_multimodal_{S}_{T}" / "predictions.csv",
+        ("03 MedGemma 1.5 + QLoRA centralized", "pred", runs / f"central_multimodal_{S}_{T}" / "predictions.csv",
          logs / f"comet_central_multimodal_{T}.log"),
-        ("04 FL iid", "pred", runs / f"fl_multimodal_iid_{S}_{T}" / "predictions.csv", logs / f"comet_fl_multimodal_iid_{T}.log"),
-        ("04 FL skew 0.8", "pred", runs / f"fl_multimodal_skew08_{S}_{T}" / "predictions.csv", logs / f"comet_fl_multimodal_skew08_{T}.log"),
-        ("04 FL skew 1.0", "pred", runs / f"fl_multimodal_skew10_{S}_{T}" / "predictions.csv", logs / f"comet_fl_multimodal_skew10_{T}.log"),
+        ("04 MedGemma 1.5 + QLoRA federated, IID", "pred", runs / f"fl_multimodal_iid_{S}_{T}" / "predictions.csv",
+         logs / f"comet_fl_multimodal_iid_{T}.log"),
+        ("04 MedGemma 1.5 + QLoRA federated, skew 0.8", "pred", runs / f"fl_multimodal_skew08_{S}_{T}" / "predictions.csv",
+         logs / f"comet_fl_multimodal_skew08_{T}.log"),
+        ("04 MedGemma 1.5 + QLoRA federated, skew 1.0", "pred", runs / f"fl_multimodal_skew10_{S}_{T}" / "predictions.csv",
+         logs / f"comet_fl_multimodal_skew10_{T}.log"),
     ]
-    table, out = [], {}
+    performance, costs, out = [], [], {}
     for name, kind, path, log in settings:
         if not path.is_file():
-            table.append(f"| {name} | missing: {path} |" + " |" * 8)
+            performance.append(f"| {name} | missing: {path} |" + " |" * 7)
+            costs.append(f"| {name} | missing log |" + " |" * 7)
             continue
         m = from_abmil(path, S) if kind == "abmil" else from_predictions(path)
         c = from_log(log)
         out[name] = {"metrics": m, "cost": c, "source": str(path)}
-        cost = (f"{c['gpu_hours_train']} GPU-h, {c['rounds']}×{c['clients']}, {c['comm_gb_total']} GB"
-                if c else ("20 s (+1.03 GPU-h shared embedding)" if kind == "abmil" else "0 (inference only)"))
-        table.append(f"| {name} | {m['n_patients']} | {m['roc_auc']:.3f} | {m['pr_auc']:.3f} | {m['accuracy']:.3f} | "
-                     f"{m['balanced_accuracy']:.3f} | {m['recall']['ERMS']:.2f} / {m['recall']['ARMS']:.2f} | "
-                     f"{m['tuned_balanced_accuracy']:.3f} @ {m['tuned_threshold']:.3f} | {m['invalid_predictions']} | {cost} |")
-    header = (f"| Setting ({S}) | n | ROC-AUC | PR-AUC | Acc | Bal. acc | Recall ERMS / ARMS | "
-              "Bal. acc @ tuned thr | Unparsed | Training cost (GPU-h, rounds×clients, adapter traffic) |\n"
-              "|---|---|---|---|---|---|---|---|---|---|")
-    print(header + "\n" + "\n".join(table))
+        performance.append(
+            f"| {name} | {m['n_patients']} | {m['roc_auc']:.3f} | {m['pr_auc']:.3f} | {m['accuracy']:.3f} | "
+            f"{m['balanced_accuracy']:.3f} | {m['recall']['ERMS']:.2f} | {m['recall']['ARMS']:.2f} | "
+            f"{m['invalid_predictions']} |"
+        )
+        costs.append("| " + " | ".join([name, *cost_cells(kind, c)]) + " |")
+    perf_header = (
+        f"| Setting ({S}) | n | ROC-AUC | PR-AUC | Accuracy | Balanced accuracy | ERMS recall | ARMS recall | "
+        "Replies that are not ERMS or ARMS |\n|---|---|---|---|---|---|---|---|---|"
+    )
+    cost_header = (
+        "| Setting | Train time | GPU hours | Peak GPU memory | Local train time | Rounds | "
+        "Upload per round | Download per round | Total traffic |\n"
+        "|---|---|---|---|---|---|---|---|---|"
+    )
+    print("## Predictive performance\n")
+    print(perf_header + "\n" + "\n".join(performance))
+    print("\nA reply counts in the last column when it is not exactly ERMS or ARMS. "
+          "That case is scored as wrong, not as a prediction of ERMS.\n")
+    print("## Computational cost and communication\n")
+    print(cost_header + "\n" + "\n".join(costs))
+    print("\nTrain time and GPU hours add up every site. Local train time and peak GPU memory are listed per site. "
+          "Upload and download add up the sites in that round. Total traffic is upload plus download. "
+          "Zero-shot has no training and no adapter exchange.\n")
     dest = Path(a.output or runs / f"summary_{S}_{T}.json")
     dest.write_text(json.dumps(out, indent=2) + "\n")
-    print(f"\nJSON written to {dest}. Tuned thresholds are chosen on {S}; apply them to test only if chosen on validation.")
+    print(f"JSON written to {dest}. Tuned thresholds are stored in the JSON and were chosen on {S}.")
 
 
 if __name__ == "__main__":

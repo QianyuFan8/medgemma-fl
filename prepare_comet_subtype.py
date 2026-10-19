@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter, defaultdict
 import csv
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -19,11 +20,37 @@ import subprocess
 
 from methylation_utils import panel_fingerprint
 from methylation_validate import validate_clients
-from prepare_shared_methylation import dump, read_tsv, sha256_file, write_tsv
 from subtype_utils import MODALITIES, PROMPT_STYLE, SUBTYPE_CLASSES, make_subtype_record, read_mapping
 
 MISSING = {"", "NA", "N/A", "NAN", "NONE"}
 QC_MODES = {"lenient": 0.05, "strict": 0.0}
+
+
+def read_tsv(path):
+    with Path(path).open(newline="", encoding="utf-8-sig") as f:
+        return list(csv.DictReader(f, delimiter="\t"))
+
+
+def write_tsv(path, rows):
+    if not rows:
+        raise ValueError(f"No rows to write: {path}")
+    fields = list(dict.fromkeys(k for row in rows for k in row))
+    with Path(path).open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields, delimiter="\t")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def dump(path, value):
+    Path(path).write_text(json.dumps(value, indent=2) + "\n")
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def matrix_header(path):

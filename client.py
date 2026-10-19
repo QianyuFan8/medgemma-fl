@@ -222,7 +222,7 @@ def main():
     train_json = os.path.join(data_path, "train.json")
     validation_json = os.path.join(data_path, "validation.json")
     if not os.path.isfile(train_json):
-        raise FileNotFoundError(f"Expected train.json at {train_json}. Run prepare_data.py first.")
+        raise FileNotFoundError(f"Expected train.json at {train_json}.")
 
     require_supported_gpu()
     flare.init()

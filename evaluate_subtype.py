@@ -125,7 +125,7 @@ def main():
         raise FileExistsError(out)
     task = json.loads((root / "task.json").read_text())
     if task.get("task") != "comet_subtype":
-        raise ValueError("Not a comet_subtype export; use evaluate_methylation.py for other tasks")
+        raise ValueError("Not a comet_subtype export")
     classes, positive = task["classes"], args.positive_class
     validate_clients(root / "clients", task["n_clients"])
     reference = json.loads((root / f"{args.split}.json").read_text())

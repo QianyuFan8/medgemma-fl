@@ -2,8 +2,10 @@
 
 `train`  fits ABMIL for ERMS vs ARMS on TRAINING slides only (fixed epochs, no
          validation-based model selection) and scores attention for every slide.
-`montage` reads the top-k attention tiles from each slide and writes a
-         grid x grid PNG (default 4 x 4 of 224 px tiles = 896 x 896, MedGemma's input size).
+`montage` picks tiles for MedGemma: highest attention first, keeping each new
+         tile at least two tile-widths from those already chosen. If that yields
+         fewer than k tiles, the remaining slots are filled in attention order.
+         Default is a 4 x 4 PNG (896 x 896), MedGemma's input size.
 
 Validation/test labels are never used to fit or select the attention model, so the
 montage of a held-out slide depends only on training data.
@@ -13,10 +15,15 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sys
 from pathlib import Path
 import random
 
 import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from subtype_utils import SUBTYPE_CLASSES, binary_auroc, binary_auprc
 
@@ -151,6 +158,35 @@ def train(a):
     print(f"Saved ABMIL model and attention for {len(scored)} slides to {out}")
 
 
+def select_spaced_tiles(weights, coords, k, min_separation):
+    """Return up to k indices, highest attention first.
+
+    A later tile is kept only when its Chebyshev distance from every selected
+    tile is at least min_separation (level-0 pixels). Shortfall is filled from
+    the remaining tiles in attention order.
+    """
+    weights = np.asarray(weights)
+    coords = np.asarray(coords)
+    order = np.argsort(-weights, kind="stable")
+    if k <= 0 or len(order) == 0:
+        return np.asarray([], dtype=int)
+    selected = []
+    for i in order:
+        x, y = coords[i, 0], coords[i, 1]
+        if all(max(abs(x - coords[j, 0]), abs(y - coords[j, 1])) >= min_separation for j in selected):
+            selected.append(int(i))
+            if len(selected) == k:
+                return np.asarray(selected, dtype=int)
+    chosen = set(selected)
+    for i in order:
+        i = int(i)
+        if i not in chosen:
+            selected.append(i)
+            if len(selected) == k:
+                break
+    return np.asarray(selected, dtype=int)
+
+
 def montage(a):
     import openslide
     from PIL import Image
@@ -168,12 +204,12 @@ def montage(a):
         _, coords, attrs = load_bag(a.embeddings, slide_id)
         if len(weights) != len(coords):
             raise ValueError(f"Attention/coordinate mismatch for {slide_id}")
-        top = np.argsort(-weights)[:k]
         slide_path = a.slide_dir and Path(a.slide_dir) / f"{slide_id}.svs"
         if not slide_path or not slide_path.is_file():
             slide_path = Path(attrs["slide"])
         slide = openslide.OpenSlide(str(slide_path))
         size, tile = int(attrs["tile_level0"]), int(attrs["tile"])
+        top = select_spaced_tiles(weights, coords, k, 2 * size)
         canvas = Image.new("RGB", (a.grid * tile, a.grid * tile), "white")
         for j, i in enumerate(top):
             x, y = (int(v) for v in coords[i])
@@ -195,7 +231,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="command", required=True)
     tr = sub.add_parser("train")
-    tr.add_argument("--embeddings", required=True, help="Directory of <slide>.h5 from wsi_embed.py")
+    tr.add_argument("--embeddings", required=True, help="Directory of <slide>.h5 from data_preprocessing/wsi_embed.py")
     tr.add_argument("--prepared", required=True, help="prepare_comet_subtype.py prepare output (splits.tsv)")
     tr.add_argument("--output", required=True)
     tr.add_argument("--epochs", type=int, default=30)

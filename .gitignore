@@ -4,6 +4,9 @@ NCT-*
 # CRC-VAL-HE-7K (downloaded / extracted by download_data.py)
 CRC-VAL-*
 
+# COMET patient data: methylation matrices, metadata, and whole-slide images
+/COMET_RMS_Data/
+
 # prepared data
 data/.DS_Store
 .DS_Store

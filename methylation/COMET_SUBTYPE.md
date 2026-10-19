@@ -11,10 +11,13 @@ Pipeline (run from the repository root on the GPU VM):
 2. `prepare_comet_subtype.py audit` joins mapping table, metadata, matrix header and slides.
 3. `prepare_comet_subtype.py prepare` runs lenient or strict probe QC and the training-only
    limma top-0.1% panel for ERMS vs ARMS (`methylation/prepare.R`).
-4. `wsi_embed.py` tiles each slide (224 px at 0.5 um/px, CLAM-style tissue mask) and embeds
+4. `data_preprocessing/wsi_embed.py` tiles each slide (224 px at 0.5 um/px, CLAM-style tissue mask) and embeds
    tiles with H-optimus-1 (gated; H-optimus-0 is the same-spec fallback).
 5. `abmil_montage.py train` fits gated ABMIL on training slides only; `montage` writes the
-   16 highest-attention tiles of every slide as a 4 x 4 montage (896 x 896).
+   16 tiles of every slide as a 4 x 4 montage (896 x 896). Tiles are taken in
+   attention order, and each new tile must be at least two tile-widths from those
+   already chosen. If fewer than 16 tiles meet that spacing, the remaining slots
+   are filled by the next-highest attention tiles.
 6. `prepare_comet_subtype.py export` writes a modality/partition layout: methylation, image
    or multimodal; 1 client (centralized) or 3 clients (IID or label-skewed).
 7. MedGemma three levels: zero-shot (`evaluate_subtype.py medgemma` on the base model),
@@ -121,12 +124,12 @@ scanner setting. `--max-tiles 4000` caps memory for very large slides.
 ## 5. ABMIL and montages
 
 ```bash
-python abmil_montage.py train \
+python data_preprocessing/abmil_montage.py train \
   --embeddings data/wsi/hoptimus1_embeddings \
   --prepared data/comet_subtype_lenient_v1 \
   --output runs/comet_subtype/abmil_hoptimus1_v1 --epochs 30 \
   2>&1 | tee logs/abmil_hoptimus1_v1.log
-python abmil_montage.py montage \
+python data_preprocessing/abmil_montage.py montage \
   --embeddings data/wsi/hoptimus1_embeddings \
   --abmil runs/comet_subtype/abmil_hoptimus1_v1 \
   --slide-dir data/raw/comet_slides \
@@ -166,7 +169,7 @@ User prompt (no identifiers, no label):
 Classify the subtype of this pediatric rhabdomyosarcoma.
 
 [H&E]
-The attached image is a 4x4 montage of 16 high-attention tiles (224 px at 0.5 um/px) from one H&E whole-slide image.
+The attached image is a 4x4 montage of 16 high-attention tiles spaced across one H&E whole-slide image (224 px at 0.5 um/px).
 
 [DNA methylation]
 cg00000001: 0.250000
@@ -278,11 +281,19 @@ python evaluate_subtype.py compare --data-dir data/comet_subtype_multimodal_cent
 ```
 
 `evaluation.json` holds ROC-AUC, PR-AUC (positive class ARMS), accuracy, balanced
-accuracy, per-class recall, unparsed count and per-site metrics. Computational cost comes
-from the client logs (`train_runtime_sec`, `cuda_peak_allocated_mb`) and communication cost
-from `received adapter size` / `sent updated adapter size` per round. Differential privacy
-is not implemented; the privacy-utility axis currently means centralized versus federated
-with 1 or 3 clients. Run `--split test` only after every choice is frozen on validation.
+accuracy, per-class recall, and the count of replies that are not exactly ERMS or ARMS.
+Those replies are wrong predictions; they are not relabeled as ERMS.
+
+```bash
+python summarize_subtype_results.py --split validation
+```
+
+This prints two tables. The first is predictive performance. The second separates
+computational cost (train time, GPU hours, peak GPU memory, and train time per site)
+from communication (rounds, upload per round, download per round, and total traffic).
+Both come from the client logs: `train_runtime_sec`, `cuda_peak_allocated_mb`,
+`received adapter size`, and `sent updated adapter size`. Differential privacy is not
+implemented. Run `--split test` only after every choice is frozen on validation.
 
 ## Developer checks
 

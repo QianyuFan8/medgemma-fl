@@ -11,8 +11,7 @@ from PIL import Image
 
 from methylation_utils import panel_fingerprint
 from methylation_validate import validate_clients
-from prepare_comet_subtype import allocate, assign_sites, audit, export, prepare
-from prepare_shared_methylation import read_tsv, write_tsv
+from prepare_comet_subtype import allocate, assign_sites, audit, export, prepare, read_tsv, write_tsv
 from subtype_utils import (SUBTYPE_CLASSES, binary_auprc, binary_auroc, format_subtype_example,
                            make_subtype_record, normalize_slide_id, patient_from_compbio, read_mapping,
                            subtype_metrics)

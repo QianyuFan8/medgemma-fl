@@ -99,7 +99,7 @@ def make_subtype_record(patient_id, diagnosis, probes, values, classes, modality
     parts = ["Classify the subtype of this pediatric rhabdomyosarcoma."]
     if use_image:
         parts.append("[H&E]\nThe attached image is a 4x4 montage of 16 high-attention tiles "
-                     "(224 px at 0.5 um/px) from one H&E whole-slide image.")
+                     "spaced across one H&E whole-slide image (224 px at 0.5 um/px).")
     if use_meth:
         parts.append("[DNA methylation]\n" + "\n".join(f"{p}: {v:.6f}" for p, v in zip(probes, values)))
     parts.append("What is the most likely subtype?\nOptions: " + ", ".join(classes) +
