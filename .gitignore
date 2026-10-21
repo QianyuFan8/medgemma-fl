@@ -21,3 +21,4 @@ __pycache__/
 *.py[cod]
 /job.py.before-nvflare-fix
 /client.py.before-warmup-fix
+.umap-deps/
