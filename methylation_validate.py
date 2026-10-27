@@ -41,7 +41,7 @@ def validate_clients(data_dir, n_clients):
             actual = re.findall(r'^(cg\d+): ', r['prompt'], flags=re.MULTILINE)
             if actual != task['probes']:
                 raise ValueError('Prompt CpG order differs from shared panel')
-        if task.get('task') == 'comet_subtype':
+        if task.get('task') in ('comet_subtype', 'comet_fusion'):
             modality = task['modality']
             if r.get('modality') != modality:
                 raise ValueError('Record modality differs from task modality')

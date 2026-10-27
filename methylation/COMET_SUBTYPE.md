@@ -1,23 +1,20 @@
-# COMET RMS: ERMS vs ARMS from H&E montages and EPIC methylation
+# COMET RMS: FOXO1 fusion status from H&E montages and EPIC methylation
 
-Aim 1 of the COMET analysis plan. Labels are the histologic `Subtype` column of the
-advisor's `COMET_RMS.xlsx` (ERMS / ARMS only); ARMS approximates but does not equal
-PAX3/PAX7-FOXO1 fusion status. All patient-level inputs, embeddings, montages, prompts,
-logs and checkpoints stay under the ignored `data/`, `logs/` and `runs/` directories.
+Labels are `Final Fusion Status` in `COMET_RMS_fusion_status.xlsx` (POS / NEG only),
+joined to `COMET_RMS.xlsx` on Sample ID. Samples without a POS or NEG call are excluded.
+All patient-level inputs, embeddings, montages, prompts, logs and checkpoints stay under
+the ignored `data/`, `logs/` and `runs/` directories.
 
 Pipeline (run from the repository root on the GPU VM):
 
 1. Download the beta matrix, metadata and slides from DNAnexus.
 2. `prepare_comet_subtype.py audit` joins mapping table, metadata, matrix header and slides.
 3. `prepare_comet_subtype.py prepare` runs lenient or strict probe QC and the training-only
-   limma top-0.1% panel for ERMS vs ARMS (`methylation/prepare.R`).
+   limma top-0.1% panel for POS vs NEG (`methylation/prepare.R`).
 4. `data_preprocessing/wsi_embed.py` tiles each slide (224 px at 0.5 um/px, CLAM-style tissue mask) and embeds
    tiles with H-optimus-1 (gated; H-optimus-0 is the same-spec fallback).
 5. `abmil_montage.py train` fits gated ABMIL on training slides only; `montage` writes the
-   16 tiles of every slide as a 4 x 4 montage (896 x 896). Tiles are taken in
-   attention order, and each new tile must be at least two tile-widths from those
-   already chosen. If fewer than 16 tiles meet that spacing, the remaining slots
-   are filled by the next-highest attention tiles.
+   16 highest-attention tiles of every slide as a 4 x 4 montage (896 x 896).
 6. `prepare_comet_subtype.py export` writes a modality/partition layout: methylation, image
    or multimodal; 1 client (centralized) or 3 clients (IID or label-skewed).
 7. MedGemma three levels: zero-shot (`evaluate_subtype.py medgemma` on the base model),
@@ -56,55 +53,54 @@ dx ls project-JBXfX9Q0vQQYJ9k4BxGVyYzJ:/COMET_RMS/ | grep '\.svs$' > data/raw/co
 dx download project-JBXfX9Q0vQQYJ9k4BxGVyYzJ:/COMET_RMS/*.svs -o data/raw/comet_slides/   # ~181 GiB
 ```
 
-Copy the advisor's mapping table to the VM as `data/raw/comet/COMET_RMS.xlsx` (or the
-CSV export `COMET_RMS_map.csv`; both are accepted). Do not commit it.
+Copy `COMET_RMS.xlsx` and `COMET_RMS_fusion_status.xlsx` to the VM. Do not commit them.
 
 ## 2. Audit
 
 ```bash
 python prepare_comet_subtype.py audit \
   --mapping data/raw/comet/COMET_RMS.xlsx \
+  --fusion data/raw/comet/COMET_RMS_fusion_status.xlsx \
   --comet-matrix data/raw/comet/RMS_beta.tsv \
   --comet-metadata data/raw/comet/RMSs_meta.txt \
   --slide-dir data/raw/comet_slides \
-  --output data/manifests/comet_subtype_v1_audit
-cat data/manifests/comet_subtype_v1_audit/audit.json
+  --output data/manifests/comet_fusion_v1_audit
+cat data/manifests/comet_fusion_v1_audit/audit.json
 ```
 
-Expected on the current tables: 541 mapping rows; Spindle/NOS/Unknown/Infantile/Sclerosing
-rows become `subtype_not_in_task`; RMS_347 becomes `sentrix_not_in_matrix`; slide 8135 is
-`slide_shared_by_multiple_samples`; 6217 and 6659 appear in `slides_without_mapping_row`.
+A row stays in the task only when Final Fusion Status is POS or NEG. Missing calls are
+`fusion_not_called` and do not enter limma. Slide 8135 is `slide_shared_by_multiple_samples`.
 One array per patient is kept (slide-bearing array preferred, then lexicographic ID).
-Review `samples_audit.tsv` before confirming.
+Review `samples_audit.tsv` before confirming. An earlier ERMS-vs-ARMS panel cannot be reused.
 
 ## 3. Prepare the panel (lenient primary, strict sensitivity)
 
 ```bash
 export R_LIBS_USER="$PWD/data/r-library"; unset R_HOME; mkdir -p logs; set -o pipefail
 python prepare_comet_subtype.py prepare \
-  --audit-dir data/manifests/comet_subtype_v1_audit \
-  --output data/comet_subtype_lenient_v1 \
+  --audit-dir data/manifests/comet_fusion_v1_audit \
+  --output data/comet_fusion_lenient_v1 \
   --qc-mode lenient --top-fraction 0.001 --seed 20261011 \
-  --confirm-reviewed-labels 2>&1 | tee logs/comet_subtype_lenient_v1_prepare.log
+  --confirm-reviewed-labels 2>&1 | tee logs/comet_fusion_lenient_v1_prepare.log
 python prepare_comet_subtype.py prepare \
-  --audit-dir data/manifests/comet_subtype_v1_audit \
-  --output data/comet_subtype_strict_v1 \
+  --audit-dir data/manifests/comet_fusion_v1_audit \
+  --output data/comet_fusion_strict_v1 \
   --qc-mode strict --top-fraction 0.001 --seed 20261011 \
-  --confirm-reviewed-labels 2>&1 | tee logs/comet_subtype_strict_v1_prepare.log
-cat data/comet_subtype_lenient_v1/selection_summary.json
+  --confirm-reviewed-labels 2>&1 | tee logs/comet_fusion_strict_v1_prepare.log
+cat data/comet_fusion_lenient_v1/selection_summary.json
 ```
 
 - lenient: detection p > 0.01 masked, CpGs missing in > 5% of training patients dropped,
   training-median imputation (`max_probe_missing = 0.05`).
 - strict: same masking, CpGs with any training missingness dropped (`max_probe_missing = 0`).
   Held-out failures are still median-imputed so every patient keeps the full panel.
-- Ranking: limma moderated test of ERMS vs ARMS on training M-values, top 0.1% of tested
-  CpGs. Splits are patient-level 60/20/20 with the same seed in both modes, so the two
-  panels are directly comparable.
-- `--require-slide` restricts the cohort to patients with an uploaded slide (86 ERMS/ARMS
-  today). The default keeps every ERMS/ARMS patient with methylation (~469) and lets
-  the image exports drop patients without a montage; use the default unless you want the
-  methylation-only model trained on exactly the image cohort.
+- Ranking: limma moderated test of POS vs NEG on training M-values, top 0.1% of tested
+  CpGs. Only training patients with a POS or NEG call enter the contrast. Splits are
+  patient-level 60/20/20 with the same seed in both modes, so the two panels are
+  directly comparable.
+- `--require-slide` restricts the cohort to patients with an uploaded slide. The default
+  keeps every POS/NEG patient with methylation and lets the image exports drop patients
+  without a montage.
 
 ## 4. Tile and embed slides
 
@@ -126,7 +122,7 @@ scanner setting. `--max-tiles 4000` caps memory for very large slides.
 ```bash
 python data_preprocessing/abmil_montage.py train \
   --embeddings data/wsi/hoptimus1_embeddings \
-  --prepared data/comet_subtype_lenient_v1 \
+  --prepared data/comet_fusion_lenient_v1 \
   --output runs/comet_subtype/abmil_hoptimus1_v1 --epochs 30 \
   2>&1 | tee logs/abmil_hoptimus1_v1.log
 python data_preprocessing/abmil_montage.py montage \
@@ -144,47 +140,47 @@ MedGemma level and modality.
 ## 6. Export layouts
 
 ```bash
-P=data/comet_subtype_lenient_v1; M=data/wsi/montages_hoptimus1_v1
+P=data/comet_fusion_lenient_v1; M=data/wsi/montages_hoptimus1_v1
 python prepare_comet_subtype.py export --prepared $P --modality multimodal --n-clients 1 \
-  --montage-dir $M --output data/comet_subtype_multimodal_central_v1
+  --montage-dir $M --output data/comet_fusion_multimodal_central_v1
 python prepare_comet_subtype.py export --prepared $P --modality multimodal --n-clients 3 --partition iid \
-  --montage-dir $M --output data/comet_subtype_multimodal_iid_v1
+  --montage-dir $M --output data/comet_fusion_multimodal_iid_v1
 python prepare_comet_subtype.py export --prepared $P --modality multimodal --n-clients 3 --partition skew \
-  --montage-dir $M --output data/comet_subtype_multimodal_skew_v1
+  --montage-dir $M --output data/comet_fusion_multimodal_skew_v1
 python prepare_comet_subtype.py export --prepared $P --modality image --n-clients 1 \
-  --montage-dir $M --output data/comet_subtype_image_central_v1
+  --montage-dir $M --output data/comet_fusion_image_central_v1
 python prepare_comet_subtype.py export --prepared $P --modality methylation --n-clients 1 \
-  --output data/comet_subtype_meth_central_v1
-cat data/comet_subtype_multimodal_iid_v1/site_counts.json
+  --output data/comet_fusion_meth_central_v1
+cat data/comet_fusion_multimodal_iid_v1/site_counts.json
 ```
 
 Image/multimodal exports keep only patients with a montage and copy each montage to
 `images/<patient>.png`; `task.json` lists how many patients were dropped per split.
-`--partition skew` gives site-1 and site-3 mostly ERMS and site-2 mostly ARMS
+`--partition skew` gives site-1 and site-3 mostly NEG and site-2 mostly POS
 (`--dominant-fraction 0.8`). Test patients never enter client folders.
 
 User prompt (no identifiers, no label):
 
 ```text
-Classify the subtype of this pediatric rhabdomyosarcoma.
+Classify the FOXO1 fusion status of this pediatric rhabdomyosarcoma.
 
 [H&E]
-The attached image is a 4x4 montage of 16 high-attention tiles spaced across one H&E whole-slide image (224 px at 0.5 um/px).
+The attached image is a 4x4 montage of the 16 highest-attention tiles from one H&E whole-slide image (224 px at 0.5 um/px).
 
 [DNA methylation]
 cg00000001: 0.250000
 ...
 
-What is the most likely subtype?
-Options: ERMS, ARMS.
-Reply with only the subtype abbreviation.
+What is the most likely fusion status?
+Options: NEG, POS.
+Reply with only POS or NEG.
 ```
 
 ## 7. Context check and the three MedGemma levels
 
 ```bash
 export SUBTYPE_CONTEXT=12288
-python check_methylation_context.py --data-dir data/comet_subtype_multimodal_iid_v1 --max-seq-length "$SUBTYPE_CONTEXT"
+python check_methylation_context.py --data-dir data/comet_fusion_multimodal_iid_v1 --max-seq-length "$SUBTYPE_CONTEXT"
 ```
 
 The check adds a 280-token reserve per image. Use the budget it reports for every run.
@@ -192,7 +188,7 @@ The check adds a 280-token reserve per image. Use the budget it reports for ever
 Baseline 1, zero-shot MedGemma (no training):
 
 ```bash
-python evaluate_subtype.py medgemma --data-dir data/comet_subtype_multimodal_central_v1 \
+python evaluate_subtype.py medgemma --data-dir data/comet_fusion_multimodal_central_v1 \
   --model-path google/medgemma-1.5-4b-it --parse lenient --max-seq-length "$SUBTYPE_CONTEXT" \
   --output runs/comet_subtype/zero_shot_multimodal_validation_v1
 ```
@@ -200,7 +196,7 @@ python evaluate_subtype.py medgemma --data-dir data/comet_subtype_multimodal_cen
 Baseline 2, centralized LoRA/QLoRA (one client = pooled training):
 
 ```bash
-python job.py --task subtype --data_dir data/comet_subtype_multimodal_central_v1/clients \
+python job.py --task subtype --data_dir data/comet_fusion_multimodal_central_v1/clients \
   --n_clients 1 --gpu "[0]" --num_rounds 3 --num_train_epochs 2 \
   --max_seq_length "$SUBTYPE_CONTEXT" --per_device_train_batch_size 1 --per_device_eval_batch_size 1 \
   --gradient_accumulation_steps 4 --global_lora_rank 16 --site_lora_ranks 16 \
@@ -211,7 +207,7 @@ Federated LoRA/QLoRA (same hyperparameters, IID then skew, each from the base mo
 
 ```bash
 for layout in iid skew; do
-  python job.py --task subtype --data_dir "data/comet_subtype_multimodal_${layout}_v1/clients" \
+  python job.py --task subtype --data_dir "data/comet_fusion_multimodal_${layout}_v1/clients" \
     --n_clients 3 --gpu "[0],[0],[0]" --num_rounds 3 --num_train_epochs 2 \
     --max_seq_length "$SUBTYPE_CONTEXT" --per_device_train_batch_size 1 --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps 4 --global_lora_rank 16 --site_lora_ranks 16,16,16 \
@@ -248,7 +244,7 @@ through `job.py --fl_method`; the server aggregation stays FedAvg (`naive` or `h
 Run each on the skew layout (and on iid as a control) with the same schedule, e.g.:
 
 ```bash
-python job.py --task subtype --data_dir data/comet_subtype_multimodal_skew08_v1/clients \
+python job.py --task subtype --data_dir data/comet_fusion_multimodal_skew08_v1/clients \
   --n_clients 3 --gpu "[0],[0],[0]" --num_rounds 5 --num_train_epochs 2 \
   --max_seq_length "$SUBTYPE_CONTEXT" --attn_implementation sdpa \
   --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 4 \
@@ -264,25 +260,25 @@ as before; the checkpoint path pattern is unchanged.
 ## 8. Evaluation
 
 ```bash
-python evaluate_subtype.py ridge --data-dir data/comet_subtype_multimodal_central_v1 \
+python evaluate_subtype.py ridge --data-dir data/comet_fusion_multimodal_central_v1 \
   --output runs/comet_subtype/ridge_validation_v1
-python evaluate_subtype.py medgemma --data-dir data/comet_subtype_multimodal_central_v1 \
+python evaluate_subtype.py medgemma --data-dir data/comet_fusion_multimodal_central_v1 \
   --model-path runs/comet_subtype/central_multimodal_v1/medgemma/server/simulate_job/app_server/FL_global_model.pt \
   --max-seq-length "$SUBTYPE_CONTEXT" --output runs/comet_subtype/central_multimodal_validation_v1
 for layout in iid skew; do
-  python evaluate_subtype.py medgemma --data-dir "data/comet_subtype_multimodal_${layout}_v1" \
+  python evaluate_subtype.py medgemma --data-dir "data/comet_fusion_multimodal_${layout}_v1" \
     --model-path "runs/comet_subtype/fl_multimodal_${layout}_v1/medgemma/server/simulate_job/app_server/FL_global_model.pt" \
     --max-seq-length "$SUBTYPE_CONTEXT" --output "runs/comet_subtype/fl_multimodal_${layout}_validation_v1"
 done
-python evaluate_subtype.py compare --data-dir data/comet_subtype_multimodal_central_v1 \
+python evaluate_subtype.py compare --data-dir data/comet_fusion_multimodal_central_v1 \
   --ridge-predictions runs/comet_subtype/ridge_validation_v1/predictions.csv \
   --medgemma-predictions runs/comet_subtype/central_multimodal_validation_v1/predictions.csv \
   --output runs/comet_subtype/compare_central_validation_v1
 ```
 
-`evaluation.json` holds ROC-AUC, PR-AUC (positive class ARMS), accuracy, balanced
-accuracy, per-class recall, and the count of replies that are not exactly ERMS or ARMS.
-Those replies are wrong predictions; they are not relabeled as ERMS.
+`evaluation.json` holds ROC-AUC, PR-AUC (positive class POS), accuracy, balanced
+accuracy, per-class recall, and the count of replies that are not exactly POS or NEG.
+Those replies are wrong predictions; they are not relabeled as NEG.
 
 ```bash
 python summarize_subtype_results.py --split validation

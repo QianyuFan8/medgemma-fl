@@ -32,7 +32,7 @@ def tuned_threshold(truth, scores, positive):
     return best
 
 
-def from_predictions(path, positive="ARMS"):
+def from_predictions(path, positive="POS"):
     rows = list(csv.DictReader(open(path)))
     truth = [r["truth"] for r in rows]
     if f"score_{positive}" in rows[0]:
@@ -41,7 +41,7 @@ def from_predictions(path, positive="ARMS"):
         other = [c for c in SUBTYPE_CLASSES if c != positive][0]
         scores = [1 - float(r[f"score_{other}"]) for r in rows]
     pred = [r["prediction"] for r in rows]
-    # A reply that is not exactly ERMS or ARMS stays wrong. It is not scored as ERMS.
+    # A reply that is not exactly POS or NEG stays wrong. It is not scored as NEG.
     m = subtype_metrics(truth, pred, scores, SUBTYPE_CLASSES, positive)
     m["invalid_predictions"] = sum(p not in SUBTYPE_CLASSES for p in pred)
     cut, bacc = tuned_threshold(truth, scores, positive)
@@ -50,11 +50,11 @@ def from_predictions(path, positive="ARMS"):
     return m
 
 
-def from_abmil(path, split, positive="ARMS"):
+def from_abmil(path, split, positive="POS"):
     rows = [r for r in csv.DictReader(open(path), delimiter="\t") if r["split"] == split]
     truth = [r["truth"] for r in rows]
-    scores = [float(r["score_ARMS"]) for r in rows]
-    pred = ["ARMS" if s >= 0.5 else "ERMS" for s in scores]
+    scores = [float(r["score_POS"]) for r in rows]
+    pred = ["POS" if s >= 0.5 else "NEG" for s in scores]
     m = subtype_metrics(truth, pred, scores, SUBTYPE_CLASSES, positive)
     m["invalid_predictions"] = 0
     cut, bacc = tuned_threshold(truth, scores, positive)
@@ -167,13 +167,13 @@ def main():
         out[name] = {"metrics": m, "cost": c, "source": str(path)}
         performance.append(
             f"| {name} | {m['n_patients']} | {m['roc_auc']:.3f} | {m['pr_auc']:.3f} | {m['accuracy']:.3f} | "
-            f"{m['balanced_accuracy']:.3f} | {m['recall']['ERMS']:.2f} | {m['recall']['ARMS']:.2f} | "
+            f"{m['balanced_accuracy']:.3f} | {m['recall']['NEG']:.2f} | {m['recall']['POS']:.2f} | "
             f"{m['invalid_predictions']} |"
         )
         costs.append("| " + " | ".join([name, *cost_cells(kind, c)]) + " |")
     perf_header = (
-        f"| Setting ({S}) | n | ROC-AUC | PR-AUC | Accuracy | Balanced accuracy | ERMS recall | ARMS recall | "
-        "Replies that are not ERMS or ARMS |\n|---|---|---|---|---|---|---|---|---|"
+        f"| Setting ({S}) | n | ROC-AUC | PR-AUC | Accuracy | Balanced accuracy | NEG recall | POS recall | "
+        "Replies that are not POS or NEG |\n|---|---|---|---|---|---|---|---|---|"
     )
     cost_header = (
         "| Setting | Train time | GPU hours | Peak GPU memory | Local train time | Rounds | "
@@ -182,8 +182,8 @@ def main():
     )
     print("## Predictive performance\n")
     print(perf_header + "\n" + "\n".join(performance))
-    print("\nA reply counts in the last column when it is not exactly ERMS or ARMS. "
-          "That case is scored as wrong, not as a prediction of ERMS.\n")
+    print("\nA reply counts in the last column when it is not exactly POS or NEG. "
+          "That case is scored as wrong, not as a prediction of NEG.\n")
     print("## Computational cost and communication\n")
     print(cost_header + "\n" + "\n".join(costs))
     print("\nTrain time and GPU hours add up every site. Local train time and peak GPU memory are listed per site. "

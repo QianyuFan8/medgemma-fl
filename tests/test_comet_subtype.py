@@ -73,6 +73,17 @@ def synthetic_inputs(root, n_probes=400):
             w.writerow(row)
     slides = [f"{7000 + k}.svs" for k in range(15) if k % 3] + ["7999.svs", "7900.svs", "8135.svs", "6217.svs"]
     (root / "slides.txt").write_text("\n".join(slides) + "\n")
+    # Histology stays in the mapping table; the supervised label is fusion POS/NEG.
+    # Spindle has no call and is excluded. ERMS maps to NEG and ARMS to POS so the
+    # first 40 probes still separate the two classes.
+    fusion_rows = []
+    for row in rows:
+        call = {"ERMS": "NEG", "ARMS": "POS"}.get(row["Subtype"], "")
+        fusion_rows.append({"Sample ID": row["Sample ID"], "Final Fusion Status": call})
+    with (root / "fusion.csv").open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["Sample ID", "Final Fusion Status"])
+        w.writeheader()
+        w.writerows(fusion_rows)
     return rows
 
 
@@ -130,8 +141,8 @@ class UtilsTests(unittest.TestCase):
         self.assertEqual(binary_auroc([0, 0, 1, 1], [0.1, 0.4, 0.35, 0.8]), 0.75)
         self.assertEqual(binary_auroc([0, 1], [0.5, 0.5]), 0.5)
         self.assertAlmostEqual(binary_auprc([0, 0, 1, 1], [0.1, 0.4, 0.35, 0.8]), (1 + 2 / 3) / 2)
-        m = subtype_metrics(["ERMS", "ARMS", "ARMS", "ERMS"], ["ERMS", "ARMS", "ERMS", "ERMS"], [0.2, 0.9, 0.4, 0.1], SUBTYPE_CLASSES)
-        self.assertEqual(m["positive_class"], "ARMS")
+        m = subtype_metrics(["NEG", "POS", "POS", "NEG"], ["NEG", "POS", "NEG", "NEG"], [0.2, 0.9, 0.4, 0.1], SUBTYPE_CLASSES)
+        self.assertEqual(m["positive_class"], "POS")
         self.assertEqual(m["accuracy"], 0.75)
         self.assertEqual(m["roc_auc"], 1.0)
         with self.assertRaises(ValueError):
@@ -139,42 +150,43 @@ class UtilsTests(unittest.TestCase):
 
     def test_records_and_prompts(self):
         probes, values = ["cg1", "cg2"], [0.25, 0.5]
-        meth = make_subtype_record("P1", "ERMS", probes, values, SUBTYPE_CLASSES, "methylation", image="x.png")
+        meth = make_subtype_record("P1", "NEG", probes, values, SUBTYPE_CLASSES, "methylation", image="x.png")
         self.assertIsNone(meth["image"])
         self.assertIn("cg1: 0.250000\ncg2: 0.500000", meth["prompt"])
         self.assertNotIn("[H&E]", meth["prompt"])
         self.assertNotIn("P1", meth["prompt"])
-        self.assertNotIn("ERMS\n", meth["prompt"].split("Options:")[0])
-        img = make_subtype_record("P1", "ARMS", probes, values, SUBTYPE_CLASSES, "image", image="x.png")
+        self.assertNotIn("NEG\n", meth["prompt"].split("Options:")[0])
+        img = make_subtype_record("P1", "POS", probes, values, SUBTYPE_CLASSES, "image", image="x.png")
         self.assertEqual(img["panel_id"], panel_fingerprint([]))
         self.assertNotIn("cg1", img["prompt"])
-        both = make_subtype_record("P1", "ARMS", probes, values, SUBTYPE_CLASSES, "multimodal", image="x.png")
+        both = make_subtype_record("P1", "POS", probes, values, SUBTYPE_CLASSES, "multimodal", image="x.png")
         self.assertIn("[H&E]", both["prompt"])
         self.assertIn("[DNA methylation]", both["prompt"])
+        self.assertIn("fusion status", both["prompt"])
         msgs = format_subtype_example(both)["messages"]
         self.assertEqual([c["type"] for c in msgs[0]["content"]], ["image", "text"])
-        self.assertEqual(msgs[1]["content"][0]["text"], "ARMS")
+        self.assertEqual(msgs[1]["content"][0]["text"], "POS")
         self.assertEqual([c["type"] for c in format_subtype_example(meth)["messages"][0]["content"]], ["text"])
         with self.assertRaises(ValueError):
-            make_subtype_record("P1", "ARMS", probes, values, SUBTYPE_CLASSES, "image")
+            make_subtype_record("P1", "POS", probes, values, SUBTYPE_CLASSES, "image")
         with self.assertRaises(ValueError):
-            make_subtype_record("P1", "PRMS", probes, values, SUBTYPE_CLASSES, "methylation")
+            make_subtype_record("P1", "ERMS", probes, values, SUBTYPE_CLASSES, "methylation")
 
     def test_parse_and_scores(self):
-        self.assertEqual(lenient_parse("The features favour alveolar rhabdomyosarcoma (ARMS).", SUBTYPE_CLASSES), "ARMS")
-        self.assertEqual(lenient_parse("Embryonal, not alveolar", SUBTYPE_CLASSES), "ERMS")
+        self.assertEqual(lenient_parse("The call is fusion positive (POS).", SUBTYPE_CLASSES), "POS")
+        self.assertEqual(lenient_parse("This sample is negative.", SUBTYPE_CLASSES), "NEG")
         self.assertEqual(lenient_parse("I cannot tell.", SUBTYPE_CLASSES), "<unparsed>")
-        self.assertEqual(positive_score({"score_ERMS": "0.3"}, "ARMS", SUBTYPE_CLASSES), 0.7)
-        self.assertEqual(positive_score({"score_ARMS": "0.9", "score_ERMS": "0.1"}, "ARMS", SUBTYPE_CLASSES), 0.9)
+        self.assertEqual(positive_score({"score_NEG": "0.3"}, "POS", SUBTYPE_CLASSES), 0.7)
+        self.assertEqual(positive_score({"score_POS": "0.9", "score_NEG": "0.1"}, "POS", SUBTYPE_CLASSES), 0.9)
 
     def test_allocation(self):
         self.assertEqual(allocate(10, [0.8, 0.2, 0.8]), [5, 1, 4])  # stable tie-break favours the earlier site
         self.assertEqual(sum(allocate(7, [1, 1, 1])), 7)
-        rows = [dict(patient_id=f"E{i}", diagnosis="ERMS") for i in range(30)] + [dict(patient_id=f"A{i}", diagnosis="ARMS") for i in range(30)]
+        rows = [dict(patient_id=f"N{i}", diagnosis="NEG") for i in range(30)] + [dict(patient_id=f"P{i}", diagnosis="POS") for i in range(30)]
         sites = ["site-1", "site-2", "site-3"]
         skew = assign_sites(rows, sites, "skew", random.Random(0), 0.9)
-        site2_arms = sum(1 for r in rows if r["diagnosis"] == "ARMS" and skew[r["patient_id"]] == "site-2")
-        self.assertGreater(site2_arms, 20)
+        site2_pos = sum(1 for r in rows if r["diagnosis"] == "POS" and skew[r["patient_id"]] == "site-2")
+        self.assertGreater(site2_pos, 20)
         iid = assign_sites(rows, sites, "iid", random.Random(0), 0.9)
         per_site = [sum(1 for r in rows if iid[r["patient_id"]] == s) for s in sites]
         self.assertEqual(max(per_site) - min(per_site) <= 2, True)
@@ -187,17 +199,18 @@ class PipelineTests(unittest.TestCase):
             synthetic_inputs(root)
             mapping = read_mapping(root / "map.csv")
             self.assertEqual(mapping[0]["patient_id"], "SJRHB000")
-            report = audit(argparse.Namespace(mapping=root / "map.csv", comet_matrix=root / "beta.tsv",
+            report = audit(argparse.Namespace(mapping=root / "map.csv", fusion=root / "fusion.csv",
+                                              comet_matrix=root / "beta.tsv",
                                               comet_metadata=root / "meta.txt", slide_dir=None,
                                               slide_list=root / "slides.txt", output=root / "audit"))
             status = report["sample_status"]
-            self.assertEqual(status["subtype_not_in_task"], 1)
+            self.assertEqual(status["fusion_not_called"], 1)
             self.assertEqual(status["metadata_qc_failed"], 1)
             self.assertEqual(status["sentrix_not_in_matrix"], 1)
             self.assertEqual(status["additional_sample_same_patient"], 1)
             self.assertEqual(report["shared_slides"], ["8135"])
             self.assertEqual(report["slides_without_mapping_row"], ["6217"])
-            self.assertEqual(report["candidate_patients_by_subtype"], {"ERMS": 7, "ARMS": 9})
+            self.assertEqual(report["candidate_patients_by_label"], {"NEG": 7, "POS": 9})
             rows = {r["comet_sample_id"]: r for r in read_tsv(root / "audit/samples_audit.tsv")}
             # Patient 0: the duplicate array with a slide is preferred over the slide-less one.
             self.assertEqual(rows["RMS_dup"]["status"], "candidate_pending_label_review")
@@ -260,8 +273,9 @@ class PipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             synthetic_inputs(root)
-            audit(argparse.Namespace(mapping=root / "map.csv", comet_matrix=root / "beta.tsv", comet_metadata=root / "meta.txt",
-                                     slide_dir=None, slide_list=root / "slides.txt", output=root / "audit"))
+            audit(argparse.Namespace(mapping=root / "map.csv", fusion=root / "fusion.csv", comet_matrix=root / "beta.tsv",
+                                     comet_metadata=root / "meta.txt", slide_dir=None, slide_list=root / "slides.txt",
+                                     output=root / "audit"))
             for mode in ("lenient", "strict"):
                 prepare(argparse.Namespace(audit_dir=root / "audit", output=root / f"prep_{mode}", confirm_reviewed_labels=True,
                                            qc_mode=mode, top_fraction=0.05, require_slide=False, exclude_probes=None,
@@ -272,7 +286,7 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(spec["qc_mode"], mode)
                 self.assertEqual(len(spec["probes"]), summary["selected_cpgs"])
                 self.assertEqual(summary["selected_cpgs"], -(-summary["tested_nonconstant_cpgs"] // 20))
-                # The first 40 probes separate ARMS from ERMS by construction.
+                # The first 40 probes separate POS from NEG by construction.
                 self.assertTrue(all(int(p[2:]) < 40 for p in spec["probes"]))
                 splits = read_tsv(root / f"prep_{mode}/splits.tsv")
                 self.assertTrue({"slide_id", "slide_status"} <= set(splits[0]))

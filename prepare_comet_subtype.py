@@ -1,9 +1,9 @@
-"""COMET RMS ERMS-vs-ARMS preparation: audit -> prepare (limma panel) -> export (clients).
+"""COMET RMS fusion-status preparation: audit -> prepare (limma panel) -> export (clients).
 
-Labels are histologic subtypes from the advisor's COMET_RMS table (Sample ID, Subtype,
-Comp Bio ID, X850k Tumor File Name, Slide Scan File). Only ERMS and ARMS are used.
-Feature selection is centralized on training patients; model training may be
-centralized (one client) or simulated-federated (several clients).
+Labels are Final Fusion Status (POS / NEG) from COMET_RMS_fusion_status.xlsx, joined
+on Sample ID. Samples without a POS or NEG call are excluded. Feature selection is
+centralized on training patients; model training may be centralized (one client)
+or simulated-federated (several clients).
 """
 from __future__ import annotations
 
@@ -20,7 +20,8 @@ import subprocess
 
 from methylation_utils import panel_fingerprint
 from methylation_validate import validate_clients
-from subtype_utils import MODALITIES, PROMPT_STYLE, SUBTYPE_CLASSES, make_subtype_record, read_mapping
+from subtype_utils import (MODALITIES, PROMPT_STYLE, SUBTYPE_CLASSES, make_subtype_record,
+                           read_fusion_status, read_mapping)
 
 MISSING = {"", "NA", "N/A", "NAN", "NONE"}
 QC_MODES = {"lenient": 0.05, "strict": 0.0}
@@ -84,14 +85,17 @@ def audit(a):
     beta_cols = {c[:-9] if c.endswith(".Ave_Beta") else c: c for c in header[1:] if not c.endswith(".Detection.Pval")}
     slides = list_slides(a.slide_dir, a.slide_list)
     slide_users = Counter(r["slide_id"] for r in mapping if r["slide_id"])
+    fusion_path = str(Path(a.fusion).resolve())
+    fusion = read_fusion_status(a.fusion)
     matrix_path = str(Path(a.comet_matrix).resolve())
     records = []
     for r in mapping:
         sentrix, subtype = r["sentrix_id"], r["subtype"].upper()
+        call = fusion.get(r["sample_id"], "")
         m = meta.get(sentrix)
         col = beta_cols.get(sentrix)
-        if subtype not in SUBTYPE_CLASSES:
-            status = "subtype_not_in_task"
+        if call not in SUBTYPE_CLASSES:
+            status = "fusion_not_called"
         elif col is None:
             status = "sentrix_not_in_matrix"
         elif m is None:
@@ -114,7 +118,8 @@ def audit(a):
         else:
             slide_status = "not_available_locally"
         records.append(dict(sample_id="COMET:" + sentrix, patient_id="COMET:" + r["patient_id"] if r["patient_id"] else "",
-                            comet_sample_id=r["sample_id"], compbio_id=r["compbio_id"], diagnosis=subtype or "NA",
+                            comet_sample_id=r["sample_id"], compbio_id=r["compbio_id"], histologic_subtype=subtype or "NA",
+                            diagnosis=call or "NA",
                             source="COMET", source_group="COMET_RMS", platform="COMET_methylation",
                             sample_type="patient_tumor" if m and m["Sample.Type"].strip().lower() == "patient tumor" else "other",
                             status=status, matrix_file=matrix_path, beta_column=col or "",
@@ -129,7 +134,7 @@ def audit(a):
     for rows in by_patient.values():
         if len({x["diagnosis"] for x in rows}) > 1:
             for x in rows:
-                x["status"] = "patient_subtype_conflict"
+                x["status"] = "patient_fusion_conflict"
             continue
         # One array per patient, chosen by data availability then lexicographic ID; never by beta or label.
         ordered = sorted(rows, key=lambda x: (0 if x["slide_status"] == "available" else 1, x["sample_id"]))
@@ -142,15 +147,15 @@ def audit(a):
         "stage": "audit_only_review_before_preparing", "classes": SUBTYPE_CLASSES,
         "mapping_rows": len(mapping), "mapping_subtypes": dict(Counter(r["subtype"] for r in mapping)),
         "sample_status": dict(Counter(x["status"] for x in records)),
-        "candidate_patients_by_subtype": dict(Counter(x["diagnosis"] for x in candidates)),
-        "candidate_patients_with_slide_by_subtype": dict(Counter(x["diagnosis"] for x in candidates if x["slide_status"] == "available")),
+        "candidate_patients_by_label": dict(Counter(x["diagnosis"] for x in candidates)),
+        "candidate_patients_with_slide_by_label": dict(Counter(x["diagnosis"] for x in candidates if x["slide_status"] == "available")),
         "slide_status": dict(Counter(x["slide_status"] for x in records)),
         "slides_without_mapping_row": sorted(set(slides) - {r["slide_id"] for r in mapping}),
         "shared_slides": sorted(s for s, n in slide_users.items() if n > 1),
         "independently_clinically_verified": False,
-        "label_basis": "histologic Subtype column of the advisor's COMET_RMS table; ARMS approximates but does not equal FOXO1 fusion status",
+        "label_basis": "Final Fusion Status POS/NEG from COMET_RMS_fusion_status.xlsx; samples without a call are excluded",
         "source_files": [{"path": p, "bytes": Path(p).stat().st_size, "mtime_ns": Path(p).stat().st_mtime_ns}
-                         for p in [matrix_path]],
+                         for p in [matrix_path, fusion_path]],
         "samples_audit_sha256": sha256_file(out / "samples_audit.tsv"),
     }
     dump(out / "audit.json", report)
@@ -177,7 +182,7 @@ def prepare(a):
         included = [r for r in included if r["slide_status"] == "available"]
     counts = Counter(r["diagnosis"] for r in included)
     if set(counts) != set(SUBTYPE_CLASSES) or min(counts.values()) < 5:
-        raise ValueError(f"Need ERMS and ARMS with >=5 patients each: {dict(counts)}")
+        raise ValueError(f"Need POS and NEG with >=5 patients each: {dict(counts)}")
     if len({r["patient_id"] for r in included}) != len(included):
         raise ValueError("Duplicate patients remain")
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -210,13 +215,13 @@ def prepare(a):
                                f"<= {QC_MODES[a.qc_mode]:.0%}); training-median imputation; beta rounded to 6 decimals."))
     dump(out / "features.json", spec)
     (out / "FEATURES.md").write_text(
-        "# Frozen ERMS-vs-ARMS CpG panel\n\n"
+        "# Frozen FOXO1 fusion-status CpG panel\n\n"
         f"Panel ID: `{spec['panel_id']}`\n\nQC mode: {a.qc_mode}. Selected {len(probes)} CpGs: "
         f"ceil({a.top_fraction} x {summary['tested_nonconstant_cpgs']} tested CpGs), ranked by the training-only "
-        "limma moderated test of ERMS vs ARMS on M-values.\n\nUse features.tsv in feature_order at every site. "
+        "limma moderated test of POS vs NEG on M-values.\n\nUse features.tsv in feature_order at every site. "
         "Do not select or reorder features using validation/test data.\n\n"
-        "Labels are histologic subtypes, not fusion status. Derived from research data: do not commit "
-        "patient-level exports to GitHub.\n")
+        "Labels are Final Fusion Status (POS / NEG). Samples without a call are excluded. "
+        "Derived from research data: do not commit patient-level exports to GitHub.\n")
     print(f"Prepared {len(probes)} CpGs ({a.qc_mode} QC) in {out}; now export a modality/partition layout.")
 
 
@@ -336,7 +341,7 @@ def export(a):
     write_tsv(out / "site_assignments.tsv", assignments)
     dump(out / "site_counts.json", counts)
     panel_probes = probes if use_meth else []
-    dump(out / "task.json", dict(task="comet_subtype", classes=SUBTYPE_CLASSES, modality=a.modality,
+    dump(out / "task.json", dict(task="comet_fusion", classes=SUBTYPE_CLASSES, modality=a.modality,
                                  probes=panel_probes, panel_id=panel_fingerprint(panel_probes),
                                  features_sha256=spec["features_sha256"], panel_mode="shared" if use_meth else "image",
                                  n_clients=a.n_clients, sites=sites, partition=a.partition,
@@ -356,6 +361,7 @@ def main():
     sub = p.add_subparsers(dest="command", required=True)
     au = sub.add_parser("audit", help="Join mapping table, metadata, matrix header and slide listing")
     au.add_argument("--mapping", required=True, help="COMET_RMS.xlsx/.csv/.tsv from the advisor")
+    au.add_argument("--fusion", required=True, help="COMET_RMS_fusion_status.xlsx with Final Fusion Status")
     au.add_argument("--comet-matrix", required=True)
     au.add_argument("--comet-metadata", required=True)
     au.add_argument("--slide-dir", help="Directory holding downloaded <slide>.svs files")

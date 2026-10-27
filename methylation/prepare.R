@@ -24,7 +24,7 @@ if (!is.null(cfg$diagnoses) && !all(cfg$diagnoses %in% m$diagnosis))
 if (anyNA(m[, required]) || any(!nzchar(m$diagnosis)) || !nrow(m)) stop("Missing required metadata.")
 if (!shared && length(unique(tolower(m$platform))) != 1L) stop("Run one platform at a time.")
 # Default shared layout is the eight-class TARGET + COMET experiment; a config may
-# name its own source groups (e.g. COMET_RMS only for the ERMS-vs-ARMS task).
+# name its own source groups (e.g. COMET_RMS only for the POS-vs-NEG fusion task).
 expected_groups <- if (!is.null(cfg$source_groups)) cfg$source_groups else c("TARGET_450K", "TARGET_EPIC", "COMET_RMS")
 if (shared && (!"source_group" %in% names(m) || !setequal(unique(m$source_group), expected_groups)))
   stop("Shared mode requires exactly these source groups: ", paste(expected_groups, collapse=", "))

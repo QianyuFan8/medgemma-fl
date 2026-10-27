@@ -1,10 +1,8 @@
 """Attention-based MIL (Ilse et al. 2018, gated) on tile embeddings, then top-k montages.
 
-`train`  fits ABMIL for ERMS vs ARMS on TRAINING slides only (fixed epochs, no
+`train`  fits ABMIL for fusion POS vs NEG on TRAINING slides only (fixed epochs, no
          validation-based model selection) and scores attention for every slide.
-`montage` picks tiles for MedGemma: highest attention first, keeping each new
-         tile at least two tile-widths from those already chosen. If that yields
-         fewer than k tiles, the remaining slots are filled in attention order.
+`montage` picks the k highest-attention tiles for MedGemma, in attention order.
          Default is a 4 x 4 PNG (896 x 896), MedGemma's input size.
 
 Validation/test labels are never used to fit or select the attention model, so the
@@ -147,7 +145,7 @@ def train(a):
                 logits, weights = model(torch.from_numpy(full).to(device))
                 np.save(out / "attention" / f"{slide_id}.npy", weights.cpu().numpy())
                 scored.append(dict(slide_id=slide_id, split=split, truth=SUBTYPE_CLASSES[label],
-                                   score_ARMS=logits.softmax(-1)[1].item(), tiles=len(full)))
+                                   score_POS=logits.softmax(-1)[1].item(), tiles=len(full)))
     with (out / "slide_scores.tsv").open("w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(scored[0]), delimiter="\t")
         w.writeheader()
@@ -158,33 +156,12 @@ def train(a):
     print(f"Saved ABMIL model and attention for {len(scored)} slides to {out}")
 
 
-def select_spaced_tiles(weights, coords, k, min_separation):
-    """Return up to k indices, highest attention first.
-
-    A later tile is kept only when its Chebyshev distance from every selected
-    tile is at least min_separation (level-0 pixels). Shortfall is filled from
-    the remaining tiles in attention order.
-    """
+def select_top_tiles(weights, k):
+    """Return up to k indices, highest attention first. Location is ignored."""
     weights = np.asarray(weights)
-    coords = np.asarray(coords)
-    order = np.argsort(-weights, kind="stable")
-    if k <= 0 or len(order) == 0:
+    if k <= 0 or len(weights) == 0:
         return np.asarray([], dtype=int)
-    selected = []
-    for i in order:
-        x, y = coords[i, 0], coords[i, 1]
-        if all(max(abs(x - coords[j, 0]), abs(y - coords[j, 1])) >= min_separation for j in selected):
-            selected.append(int(i))
-            if len(selected) == k:
-                return np.asarray(selected, dtype=int)
-    chosen = set(selected)
-    for i in order:
-        i = int(i)
-        if i not in chosen:
-            selected.append(i)
-            if len(selected) == k:
-                break
-    return np.asarray(selected, dtype=int)
+    return np.argsort(-weights, kind="stable")[:k]
 
 
 def montage(a):
@@ -209,7 +186,7 @@ def montage(a):
             slide_path = Path(attrs["slide"])
         slide = openslide.OpenSlide(str(slide_path))
         size, tile = int(attrs["tile_level0"]), int(attrs["tile"])
-        top = select_spaced_tiles(weights, coords, k, 2 * size)
+        top = select_top_tiles(weights, k)
         canvas = Image.new("RGB", (a.grid * tile, a.grid * tile), "white")
         for j, i in enumerate(top):
             x, y = (int(v) for v in coords[i])

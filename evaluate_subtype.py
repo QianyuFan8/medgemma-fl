@@ -1,4 +1,4 @@
-"""Evaluate ERMS vs ARMS: ridge baseline, MedGemma (zero-shot / adapter / FL checkpoint), compare.
+"""Evaluate fusion POS vs NEG: ridge baseline, MedGemma (zero-shot / adapter / FL checkpoint), compare.
 
 MedGemma levels share this entry point:
   Baseline 1 (zero-shot)      --model-path google/medgemma-1.5-4b-it --parse lenient
@@ -20,7 +20,7 @@ import subprocess
 from methylation_validate import validate_clients
 from subtype_utils import SUBTYPE_CLASSES, format_subtype_example, subtype_metrics
 
-SYNONYMS = {"ERMS": ("erms", "embryonal"), "ARMS": ("arms", "alveolar")}
+SYNONYMS = {"NEG": ("neg", "negative"), "POS": ("pos", "positive")}
 
 
 def read_predictions(path):
@@ -53,7 +53,7 @@ def evaluate_rows(rows, reference, classes, positive):
 
 
 def lenient_parse(raw, classes):
-    """Earliest whole-word mention of a class or its histologic synonym; else <unparsed>."""
+    """Earliest whole-word mention of POS/NEG or positive/negative; else <unparsed>."""
     best = None
     for cls in classes:
         for word in SYNONYMS.get(cls, (cls.lower(),)):
@@ -124,8 +124,8 @@ def main():
     if out.exists():
         raise FileExistsError(out)
     task = json.loads((root / "task.json").read_text())
-    if task.get("task") != "comet_subtype":
-        raise ValueError("Not a comet_subtype export")
+    if task.get("task") not in ("comet_subtype", "comet_fusion"):
+        raise ValueError("Not a COMET fusion export")
     classes, positive = task["classes"], args.positive_class
     validate_clients(root / "clients", task["n_clients"])
     reference = json.loads((root / f"{args.split}.json").read_text())

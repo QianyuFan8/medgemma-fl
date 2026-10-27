@@ -1,8 +1,8 @@
-"""ERMS-vs-ARMS records, prompts, collator and metrics for the COMET subtype task.
+"""FOXO1 fusion-status records, prompts, collator and metrics for the COMET task.
 
 Records may carry a methylation CpG panel, an H&E montage image, or both. The
 true label appears only in the assistant target; prompts never include patient
-identifiers, slide numbers or the diagnosis.
+identifiers, slide numbers or the fusion call.
 """
 from __future__ import annotations
 
@@ -12,9 +12,10 @@ from pathlib import Path
 
 from methylation_utils import panel_fingerprint
 
-SUBTYPE_CLASSES = ["ERMS", "ARMS"]
+# Positive class is last: limma, ABMIL and ROC use classes[-1].
+SUBTYPE_CLASSES = ["NEG", "POS"]
 MODALITIES = ("methylation", "image", "multimodal")
-PROMPT_STYLE = "comet_subtype_v1"
+PROMPT_STYLE = "comet_fusion_v1"
 # MedGemma 4B encodes one image as 256 soft tokens plus begin/end markers.
 IMAGE_TOKEN_RESERVE = 280
 MAPPING_COLUMNS = {
@@ -78,6 +79,51 @@ def read_mapping(path) -> list[dict]:
     return out
 
 
+def normalize_fusion_status(value) -> str:
+    """Return POS or NEG. Any other call, including missing, is blank."""
+    text = "" if value is None else str(value).strip().upper()
+    if text in {"POS", "POSITIVE"}:
+        return "POS"
+    if text in {"NEG", "NEGATIVE"}:
+        return "NEG"
+    return ""
+
+
+def read_fusion_status(path) -> dict[str, str]:
+    """Map COMET Sample ID to Final Fusion Status (POS or NEG only)."""
+    path = Path(path)
+    if path.suffix.lower() == ".xlsx":
+        try:
+            import openpyxl
+        except ImportError as exc:  # pragma: no cover - environment dependent
+            raise ImportError("Reading .xlsx needs openpyxl; or export the sheet to CSV/TSV first") from exc
+        sheet = openpyxl.load_workbook(path, read_only=True, data_only=True).worksheets[0]
+        rows = sheet.iter_rows(values_only=True)
+        header = [str(h).strip() if h is not None else "" for h in next(rows)]
+        raw = [dict(zip(header, r)) for r in rows if any(v is not None for v in r)]
+    else:
+        delimiter = "\t" if path.suffix.lower() in (".tsv", ".txt") else ","
+        with path.open(newline="", encoding="utf-8-sig") as f:
+            raw = list(csv.DictReader(f, delimiter=delimiter))
+    if not raw or "Sample ID" not in raw[0] or "Final Fusion Status" not in raw[0]:
+        raise ValueError(f"{path} needs columns 'Sample ID' and 'Final Fusion Status'")
+    out = {}
+    for r in raw:
+        sample_id = "" if r["Sample ID"] is None else str(r["Sample ID"]).strip()
+        if not sample_id:
+            continue
+        call = normalize_fusion_status(r["Final Fusion Status"])
+        if not call:
+            continue
+        previous = out.get(sample_id)
+        if previous is not None and previous != call:
+            raise ValueError(f"Sample {sample_id} has conflicting fusion calls {previous} and {call}")
+        out[sample_id] = call
+    if not out:
+        raise ValueError(f"No POS or NEG fusion calls in {path}")
+    return out
+
+
 def make_subtype_record(patient_id, diagnosis, probes, values, classes, modality, image=None, site_id=None):
     if modality not in MODALITIES:
         raise ValueError(f"Unknown modality: {modality}")
@@ -96,14 +142,14 @@ def make_subtype_record(patient_id, diagnosis, probes, values, classes, modality
         raise ValueError(f"Modality {modality} requires an image for {patient_id}")
     if not use_image:
         image = None
-    parts = ["Classify the subtype of this pediatric rhabdomyosarcoma."]
+    parts = ["Classify the FOXO1 fusion status of this pediatric rhabdomyosarcoma."]
     if use_image:
-        parts.append("[H&E]\nThe attached image is a 4x4 montage of 16 high-attention tiles "
-                     "spaced across one H&E whole-slide image (224 px at 0.5 um/px).")
+        parts.append("[H&E]\nThe attached image is a 4x4 montage of the 16 highest-attention tiles "
+                     "from one H&E whole-slide image (224 px at 0.5 um/px).")
     if use_meth:
         parts.append("[DNA methylation]\n" + "\n".join(f"{p}: {v:.6f}" for p, v in zip(probes, values)))
-    parts.append("What is the most likely subtype?\nOptions: " + ", ".join(classes) +
-                 ".\nReply with only the subtype abbreviation.")
+    parts.append("What is the most likely fusion status?\nOptions: " + ", ".join(classes) +
+                 ".\nReply with only POS or NEG.")
     record = {"patient_id": patient_id, "label_name": diagnosis, "prompt": "\n\n".join(parts),
               "panel_id": panel_fingerprint(probes), "classes": list(classes), "modality": modality,
               "image": image, "prompt_style": PROMPT_STYLE}
