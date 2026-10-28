@@ -48,7 +48,16 @@ if (!all(covariates %in% names(m)) || anyNA(m[, covariates, drop=FALSE])) stop("
 # Deterministic patient split BEFORE any fitted feature filtering; one sample per patient.
 set.seed(cfg$seed)
 m$split <- "train"
-for (dx in sort(unique(m$diagnosis))) {
+if (!is.null(cfg$split_file)) {
+  planned <- as.data.frame(data.table::fread(cfg$split_file, colClasses="character"))
+  if (!all(c("patient_id", "diagnosis", "split") %in% names(planned)) ||
+      anyDuplicated(planned$patient_id) || !setequal(planned$patient_id, m$patient_id))
+    stop("Split manifest must contain exactly one row for every selected patient.")
+  planned <- planned[match(m$patient_id, planned$patient_id), , drop=FALSE]
+  if (anyNA(planned$split) || any(!planned$split %in% c("train", "validation", "test")) ||
+      !identical(planned$diagnosis, m$diagnosis)) stop("Invalid split manifest or label mismatch.")
+  m$split <- planned$split
+} else for (dx in sort(unique(m$diagnosis))) {
   ix <- sample(which(m$diagnosis == dx))
   n <- max(1L, floor(length(ix)*0.2))
   m$split[ix[seq_len(n)]] <- "test"

@@ -27,6 +27,9 @@ from subtype_utils import SUBTYPE_CLASSES, binary_auroc, binary_auprc
 
 
 def read_split_table(prepared):
+    spec = json.loads((Path(prepared) / 'features.json').read_text())
+    if spec.get('classes') != SUBTYPE_CLASSES:
+        raise ValueError('Expected a fusion NEG/POS preparation, not an old subtype panel')
     rows = []
     with (Path(prepared) / "splits.tsv").open(newline="") as f:
         for r in csv.DictReader(f, delimiter="\t"):
@@ -34,6 +37,10 @@ def read_split_table(prepared):
                 rows.append(r)
     if not rows:
         raise ValueError("No QC-passing patients with an available slide in splits.tsv")
+    if len({r['patient_id'] for r in rows}) != len(rows):
+        raise ValueError('Duplicate patient across ABMIL samples/splits')
+    if len({r['slide_id'] for r in rows}) != len(rows):
+        raise ValueError('A slide cannot represent multiple patients')
     return rows
 
 
@@ -95,6 +102,7 @@ def train(a):
     if out.exists():
         raise FileExistsError(out)
     rows = read_split_table(a.prepared)
+    patient_by_slide = {r['slide_id']: r['patient_id'] for r in rows}
     bags = {s: [] for s in ("train", "validation", "test")}
     dim = None
     for r in rows:
@@ -144,7 +152,7 @@ def train(a):
                 full, coords, _ = load_bag(a.embeddings, slide_id)
                 logits, weights = model(torch.from_numpy(full).to(device))
                 np.save(out / "attention" / f"{slide_id}.npy", weights.cpu().numpy())
-                scored.append(dict(slide_id=slide_id, split=split, truth=SUBTYPE_CLASSES[label],
+                scored.append(dict(patient_id=patient_by_slide[slide_id], slide_id=slide_id, split=split, truth=SUBTYPE_CLASSES[label],
                                    score_POS=logits.softmax(-1)[1].item(), tiles=len(full)))
     with (out / "slide_scores.tsv").open("w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(scored[0]), delimiter="\t")

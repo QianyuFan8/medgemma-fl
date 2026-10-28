@@ -69,9 +69,19 @@ cat data/manifests/comet_fusion_v1_audit/audit.json
 ```
 
 A row stays in the task only when Final Fusion Status is POS or NEG. Missing calls are
-`fusion_not_called` and do not enter limma. Slide 8135 is `slide_shared_by_multiple_samples`.
+`fusion_not_called` and do not enter limma. Canonical patient IDs come from metadata
+`UID.Subject`, never from legacy Comp Bio prefixes. COMET/SJID disagreements are
+excluded. Slide-map disagreements and slides shared across distinct/unresolved
+patients cannot enter image analysis. Multiple samples of the same UID may share
+one slide (including 8135); these are deduplicated, not discarded.
 One array per patient is kept (slide-bearing array preferred, then lexicographic ID).
 Review `samples_audit.tsv` before confirming. An earlier ERMS-vs-ARMS panel cannot be reused.
+
+For the corrected paired-patient CV workflow and the six-model comparison, see
+[FUSION_RUNBOOK.md](FUSION_RUNBOOK.md). All preprocessing and ABMIL selection must
+be fitted anew in each fold. Existing H-optimus embeddings may be reused only when
+their encoder, slide source and preprocessing match; old ABMIL models/montages
+and old supervised CpG panels must not be reused for the new evaluation.
 
 ## 3. Prepare the panel (lenient primary, strict sensitivity)
 

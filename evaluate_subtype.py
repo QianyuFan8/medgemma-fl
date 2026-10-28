@@ -124,7 +124,7 @@ def main():
     if out.exists():
         raise FileExistsError(out)
     task = json.loads((root / "task.json").read_text())
-    if task.get("task") not in ("comet_subtype", "comet_fusion"):
+    if task.get("task") != "comet_fusion" or task.get("classes") != ["NEG", "POS"]:
         raise ValueError("Not a COMET fusion export")
     classes, positive = task["classes"], args.positive_class
     validate_clients(root / "clients", task["n_clients"])

@@ -253,6 +253,9 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(task["training_regime"], "centralized")
             validate_clients(central / "clients", 1)
             train = json.loads((central / "clients/site-1/train.json").read_text())
+            with (central / 'train.csv').open() as f:
+                baseline_rows = list(csv.DictReader(f))
+            self.assertEqual({r['patient_id'] for r in baseline_rows}, {r['patient_id'] for r in train})
             self.assertTrue(all(r["image"] and (central / r["image"]).is_file() for r in train))
             self.assertTrue(all("cg" not in r["prompt"] for r in train))
             self.assertEqual(sum(task["dropped_for_modality"].values()),

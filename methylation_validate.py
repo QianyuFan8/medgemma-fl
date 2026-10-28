@@ -10,6 +10,8 @@ from methylation_utils import panel_fingerprint
 def validate_clients(data_dir, n_clients):
     root = Path(data_dir)
     task = json.loads((root.parent / "task.json").read_text())
+    if task.get('task') == 'comet_subtype' or (task.get('task') == 'comet_fusion' and task.get('classes') != ['NEG', 'POS']):
+        raise ValueError('This branch requires fusion NEG/POS exports; rebuild old subtype datasets')
     if task["n_clients"] != n_clients:
         raise ValueError("Client count differs from prepared dataset")
     if task.get('panel_mode') == 'shared':
