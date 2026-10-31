@@ -30,6 +30,7 @@ from model import (
     infer_uniform_lora_rank_from_state_dict,
     load_medgemma_base_model,
 )
+from adapter_scope import infer_adapter_scope
 from peft import PeftModel
 from transformers import AutoProcessor
 
@@ -79,6 +80,7 @@ def load_model_and_processor(
             quantized=quantized,
             device_map=device_map,
             lora_rank=lora_rank,
+            adapter_scope=infer_adapter_scope(adapter_state),
         )
         apply_adapter_state(model, adapter_state)
     elif os.path.isdir(model_path) and os.path.isfile(os.path.join(model_path, "adapter_config.json")):

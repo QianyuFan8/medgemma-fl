@@ -261,6 +261,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(sum(task["dropped_for_modality"].values()),
                              sum(1 for r in splits.values() if r["slide_status"] != "available"))
 
+            (montages / "selection_audit.json").write_text(json.dumps({"arguments":{"selection":"spatial"}}))
             multi = run("multimodal", "skew", 3, "multi_skew")
             validate_clients(multi / "clients", 3)
             task = json.loads((multi / "task.json").read_text())
@@ -268,6 +269,9 @@ class PipelineTests(unittest.TestCase):
             rec = json.loads((multi / "validation.json").read_text())[0]
             self.assertIn("[H&E]", rec["prompt"])
             self.assertIn("[DNA methylation]", rec["prompt"])
+            self.assertIn("spatial-separation", rec["prompt"])
+            self.assertEqual(rec["image_selection"], "spatial")
+            self.assertNotIn("highest-attention", rec["prompt"])
             with self.assertRaises(FileExistsError):
                 run("multimodal", "skew", 3, "multi_skew")
 

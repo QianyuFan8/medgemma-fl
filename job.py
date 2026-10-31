@@ -142,6 +142,7 @@ def define_parser():
         default="/tmp/nvflare/simulation",
         help="Simulation workspace root (default: /tmp/nvflare/simulation).",
     )
+    parser.add_argument("--adapter_scope", choices=("legacy", "lora-only"), default="legacy")
     return parser.parse_args()
 
 
@@ -229,6 +230,7 @@ def _parse_site_lora_ranks(site_lora_ranks: str | None, n_clients: int, global_l
 
 def _build_train_args(args, site_data_path: str, image_root: str, report_to: str, local_lora_rank: int) -> str:
     train_args = [
+        "--adapter_scope", getattr(args, "adapter_scope", "legacy"),
         "--task", args.task,
         "--max_seq_length", str(args.max_seq_length),
         "--data_path",
@@ -308,7 +310,7 @@ def main():
 
     model = {
         "class_path": "model.MedGemmaLoRAModel",
-        "args": {"model_name_or_path": args.model_name_or_path, "lora_rank": args.global_lora_rank},
+        "args": {"model_name_or_path": args.model_name_or_path, "lora_rank": args.global_lora_rank, "adapter_scope": args.adapter_scope},
     }
 
     recipe = FedAvgRecipe(

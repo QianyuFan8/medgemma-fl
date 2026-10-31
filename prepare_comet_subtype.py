@@ -308,6 +308,12 @@ def export(a):
     montage_dir = Path(a.montage_dir) if a.montage_dir else None
     if use_image and montage_dir is None:
         raise ValueError("--montage-dir is required for image/multimodal exports")
+    image_selection = "top"
+    if use_image and (montage_dir / "selection_audit.json").exists():
+        selection_audit = json.loads((montage_dir / "selection_audit.json").read_text())
+        image_selection = selection_audit["arguments"]["selection"]
+        if image_selection not in ("top", "spatial"):
+            raise ValueError("Unknown montage selection policy")
     records, assignments, dropped = {}, [], Counter()
     csv_rows = {}
     seen = set()
@@ -350,6 +356,10 @@ def export(a):
             record = make_subtype_record(row["patient_id"], row["diagnosis"], probes,
                                          [float(row[p]) for p in probes] if use_meth else [],
                                          SUBTYPE_CLASSES, a.modality, image=image, site_id=site)
+            if use_image and image_selection == "spatial":
+                record["prompt"] = record["prompt"].replace("16 highest-attention tiles",
+                    "16 high-attention tiles selected with a spatial-separation rule")
+                record["image_selection"] = image_selection
             buckets[site].append(record)
             counts[site][split][row["diagnosis"]] += 1
             assignments.append(dict(patient_id=row["patient_id"], diagnosis=row["diagnosis"], split=split,

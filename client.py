@@ -209,6 +209,7 @@ def main():
         default=16,
         help="Local site LoRA rank. Incoming global banks are truncated to this rank before loading.",
     )
+    parser.add_argument("--adapter_scope", choices=("legacy", "lora-only"), default="legacy")
     args = parser.parse_args()
 
     signal.signal(signal.SIGTERM, lambda _signum, _frame: sys.exit(0))
@@ -254,10 +255,14 @@ def main():
         quantized=True,
         device_map={"": 0},
         lora_rank=args.lora_rank,
+        adapter_scope=args.adapter_scope,
         attn_implementation=args.attn_implementation,
     )
     print(f"site={client_name}")
     model.print_trainable_parameters()
+    from adapter_scope import trainable_summary
+    parameter_audit = trainable_summary(model, args.adapter_scope)
+    print(f"adapter_scope={args.adapter_scope}, trainable_parameters={parameter_audit['trainable_parameters']}")
     fl_state = FLMethodState(args.fl_method, mu=args.fedprox_mu, tau=args.fedlc_tau,
                              classes=train_dataset[0].get("classes"))
     print(f"site={client_name}, fl_method={args.fl_method}, fedprox_mu={args.fedprox_mu}, fedlc_tau={args.fedlc_tau}")
@@ -267,6 +272,9 @@ def main():
     else:
         work_dir = abs_path(args.work_dir)
     os.makedirs(work_dir, exist_ok=True)
+    import json
+    with open(os.path.join(work_dir, "trainable_parameters.json"), "w") as f:
+        json.dump(parameter_audit, f, indent=2)
 
     while flare.is_running():
         input_model = flare.receive()
