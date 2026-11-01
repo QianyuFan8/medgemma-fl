@@ -25,3 +25,8 @@ __pycache__/
 .mpl/
 .numba/
 .umap-deps/
+
+# Keep Markdown documentation local; do not publish it to this repository.
+*.[mM][dD]
+*.[mM][dD][xX]
+*.[mM][aA][rR][kK][dD][oO][wW][nN]
