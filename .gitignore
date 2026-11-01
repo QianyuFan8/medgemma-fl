@@ -30,3 +30,6 @@ __pycache__/
 *.[mM][dD]
 *.[mM][dD][xX]
 *.[mM][aA][rR][kK][dD][oO][wW][nN]
+
+# Explicitly keep the local VM setup guide out of Git.
+/methylation/VM_LORA_ONLY_10_RUNS_ZH.md
