@@ -1,5 +1,7 @@
 # Fixed-cohort LoRA-only and spatial-selection ablations
 
+For new-VM installation, backup restoration, and all ten runs, use [the Chinese VM guide](VM_LORA_ONLY_10_RUNS_ZH.md).
+
 Use the existing patient-disjoint 38/10/12 record split (35/10/11 patients). Keep the supplied 849-CpG panel and the documented feature-selection caveat. No labels, splits, beta values, or baseline predictions are changed by these tools. Patient grouping must also be considered when reporting metrics.
 
 ## A. First change only the trainable parameter scope
@@ -12,7 +14,7 @@ Removing full matrix training reduces optimizer and communication costs but does
 
 ### Update the VM code
 
-Update the shared branch code, or transfer these files from this checkout to the matching VM checkout: `adapter_scope.py`, `model.py`, `client.py`, `job.py`, `inference_utils.py`, `data_preprocessing/tile_selection.py`, `data_preprocessing/abmil_montage.py`, `data_preprocessing/audit_tile_selection.py`, `scripts/run_fusion_ablation.sh`, `prepare_comet_subtype.py`. Existing vm-kit/check_splits.py and link_panel.py must be present. Preserve VM data and checkpoints.
+Update the shared branch code, or transfer these files from this checkout to the matching VM checkout: `adapter_scope.py`, `model.py`, `client.py`, `job.py`, `inference_utils.py`, `data_preprocessing/tile_selection.py`, `data_preprocessing/abmil_montage.py`, `data_preprocessing/audit_tile_selection.py`, `scripts/run_fusion_ablation.sh`, `prepare_comet_subtype.py`. The standalone scripts/check_fusion_splits.py must also be included. Preserve VM data and checkpoints.
 
 Run from `/home/ubuntu/medgemma-fl` (adjust if your checkout is elsewhere):
 

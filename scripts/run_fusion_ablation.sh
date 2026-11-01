@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run from repo root. Requires the existing paired data / exports and vm-kit checks.
+# Run from repo root. Requires the existing paired data / exports.
 set -euo pipefail
 source .venv/bin/activate
 export MEDGEMMA_ATTN_IMPLEMENTATION=sdpa TOKENIZERS_PARALLELISM=false WANDB_MODE=disabled
@@ -28,7 +28,7 @@ case "$mode" in
   data=${data_prefix}_${layout}; prefix=fl_${layout}_${method}; clients=3; gpus='[0],[0],[0]'; ranks=16,16,16;;
  *) exit 2;;
 esac
-python vm-kit/check_splits.py --prepared data/fixed849_disjoint_paired --export "$data"
+python scripts/check_fusion_splits.py --prepared data/fixed849_disjoint_paired --export "$data"
 root="runs/ablation_${scope}_${input_tag}_r${rounds}_e${epochs}"
 mkdir -p "$root/logs"
 case "$mode" in
@@ -45,6 +45,9 @@ case "$mode" in
     --fl_method "$method" --lora_aggregation naive --learning_rate 2e-4 \
     --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 4 \
     "${schedule[@]}" --workspace "$target" 2>&1 | tee "$root/logs/${prefix}_${suffix}.log"
+  test -s "$target/medgemma/server/simulate_job/app_server/FL_global_model.pt" || {
+    echo "No global checkpoint produced; inspect $target before continuing"; exit 1;
+  }
   ;;
  *-eval)
   checkpoint="$root/${prefix}_train/medgemma/server/simulate_job/app_server/FL_global_model.pt"
