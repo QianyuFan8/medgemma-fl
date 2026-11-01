@@ -279,7 +279,7 @@ def main():
         if args.site_lora_ranks is None:
             args.site_lora_ranks = ",".join([str(args.global_lora_rank)] * n_clients)
         from methylation_validate import validate_clients
-        task_spec = validate_clients(data_dir, n_clients)
+        task_spec = validate_clients(data_dir, n_clients, require_patient_groups=args.task == "subtype")
         if args.task == "subtype":
             # Montage paths in the exported JSON are relative to the export root.
             image_root = os.path.dirname(data_dir)

@@ -262,23 +262,41 @@ def allocate(n, weights):
 
 
 def assign_sites(rows, sites, partition, rng, dominant_fraction):
-    """Return {patient_id: site}. iid = stratified round robin; skew = per-site dominant class."""
+    """Allocate canonical patients, then expand to record IDs without splitting a patient."""
+    from fusion_identity import canonical_uid
+
+    if not sites or len(set(sites)) != len(sites) or partition not in ("iid", "skew"):
+        raise ValueError("Invalid sites or partition")
+    if not 0 < dominant_fraction < 1:
+        raise ValueError("dominant_fraction must be between zero and one")
+    patients, seen = {}, set()
+    for row in rows:
+        uid = canonical_uid(row)
+        if row["patient_id"] in seen:
+            raise ValueError("Duplicate record ID")
+        seen.add(row["patient_id"])
+        group = patients.setdefault(uid, [])
+        if row["diagnosis"] not in SUBTYPE_CLASSES or (group and group[0]["diagnosis"] != row["diagnosis"]):
+            raise ValueError("Invalid or conflicting fusion labels for a canonical patient")
+        group.append(row)
     assignment = {}
-    for k, dx in enumerate(SUBTYPE_CLASSES):
-        group = [r for r in rows if r["diagnosis"] == dx]
+    for dx in SUBTYPE_CLASSES:
+        group = sorted(uid for uid, records in patients.items() if records[0]["diagnosis"] == dx)
         rng.shuffle(group)
         if partition == "iid":
             offset = rng.randrange(len(sites))
-            for j, r in enumerate(group):
-                assignment[r["patient_id"]] = sites[(offset + j) % len(sites)]
+            for j, uid in enumerate(group):
+                for r in patients[uid]:
+                    assignment[r["patient_id"]] = sites[(offset + j) % len(sites)]
         else:
             weights = [dominant_fraction if SUBTYPE_CLASSES[i % len(SUBTYPE_CLASSES)] == dx else 1 - dominant_fraction
                        for i in range(len(sites))]
             counts = allocate(len(group), weights)
             cursor = 0
             for site, c in zip(sites, counts):
-                for r in group[cursor:cursor + c]:
-                    assignment[r["patient_id"]] = site
+                for uid in group[cursor:cursor + c]:
+                    for r in patients[uid]:
+                        assignment[r["patient_id"]] = site
                 cursor += c
     return assignment
 
@@ -300,8 +318,10 @@ def export(a):
     use_meth = a.modality in ("methylation", "multimodal")
     use_image = a.modality in ("image", "multimodal")
     split_rows = [r for r in read_tsv(root / "splits.tsv") if r["qc_pass"].upper() == "TRUE"]
-    if len({r["patient_id"] for r in split_rows}) != len(split_rows):
-        raise ValueError("Duplicate patients or cross-split patient overlap")
+    from fusion_identity import canonical_uid, validate_patient_rows
+    validate_patient_rows(split_rows)
+    for r in split_rows:
+        r["canonical_uid"] = canonical_uid(r)
     splits = {r["patient_id"]: r for r in split_rows}
     sites = [f"site-{i}" for i in range(1, a.n_clients + 1)]
     rng = random.Random(a.seed)
@@ -349,20 +369,22 @@ def export(a):
             raise ValueError(f"Split {split} lost a class after modality filtering")
         csv_rows[split] = [r for r, _ in kept]
         # Test patients also receive a site label (for per-site reporting) but never enter client folders.
-        site_of = assign_sites([r for r, _ in kept], sites, a.partition, rng, a.dominant_fraction)
+        site_of = assign_sites([splits[r["patient_id"]] for r, _ in kept], sites, a.partition, rng, a.dominant_fraction)
         buckets = {s: [] for s in sites}
         for row, image in kept:
             site = site_of[row["patient_id"]]
             record = make_subtype_record(row["patient_id"], row["diagnosis"], probes,
                                          [float(row[p]) for p in probes] if use_meth else [],
                                          SUBTYPE_CLASSES, a.modality, image=image, site_id=site)
+            record["canonical_uid"] = splits[row["patient_id"]]["canonical_uid"]
             if use_image and image_selection == "spatial":
                 record["prompt"] = record["prompt"].replace("16 highest-attention tiles",
                     "16 high-attention tiles selected with a spatial-separation rule")
                 record["image_selection"] = image_selection
             buckets[site].append(record)
             counts[site][split][row["diagnosis"]] += 1
-            assignments.append(dict(patient_id=row["patient_id"], diagnosis=row["diagnosis"], split=split,
+            assignments.append(dict(patient_id=row["patient_id"], canonical_uid=record["canonical_uid"],
+                                    diagnosis=row["diagnosis"], split=split,
                                     site_id=site, image=image or ""))
             records.setdefault(split, []).append(record)
         if split != "test":
@@ -394,11 +416,16 @@ def export(a):
     dump(out / "test.json", records["test"])
     write_tsv(out / "site_assignments.tsv", assignments)
     dump(out / "site_counts.json", counts)
+    patient_counts = {site: {split: {label: len({r["canonical_uid"] for r in assignments
+                      if r["site_id"] == site and r["split"] == split and r["diagnosis"] == label})
+                      for label in SUBTYPE_CLASSES} for split in ("train", "validation", "test")} for site in sites}
+    dump(out / "site_patient_counts.json", patient_counts)
     panel_probes = probes if use_meth else []
     dump(out / "task.json", dict(task="comet_fusion", classes=SUBTYPE_CLASSES, modality=a.modality,
                                  probes=panel_probes, panel_id=panel_fingerprint(panel_probes),
                                  features_sha256=spec["features_sha256"], panel_mode="shared" if use_meth else "image",
                                  n_clients=a.n_clients, sites=sites, partition=a.partition,
+                                 client_assignment_unit="canonical_uid", client_assignment_version=2,
                                  dominant_fraction=a.dominant_fraction if a.partition == "skew" else None,
                                  seed=a.seed, prompt_style=PROMPT_STYLE, qc_mode=spec.get("qc_mode"),
                                  selection="centralized_train_only_limma_shared_fraction", selection_summary=spec["selection"],

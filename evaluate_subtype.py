@@ -99,6 +99,7 @@ def predict_one(model, processor, row, data_dir, classes, max_seq_length, parse)
     prediction = raw if raw in classes else (lenient_parse(raw, classes) if parse == "lenient" else "<unparsed>")
     out = {"patient_id": row["patient_id"], "truth": row["label_name"], "prediction": prediction, "raw_response": raw}
     out.update({f"score_{c}": p for c, p in zip(classes, probs)})
+    out.update({f"logp_{c}": float(lp) for c, lp in zip(classes, logps)})
     return out
 
 
@@ -178,6 +179,9 @@ def main():
     report = {"mode": args.mode, "split": args.split, "panel_id": task["panel_id"], "modality": task["modality"],
               "training_regime": task.get("training_regime"), "partition": task.get("partition"),
               "arguments": vars(args), "metrics": results}
+    if args.mode == 'medgemma' and Path(args.model_path).is_file():
+        from fusion_threshold import digest
+        report['checkpoint_sha256'] = digest(args.model_path)
     (out / "evaluation.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
 

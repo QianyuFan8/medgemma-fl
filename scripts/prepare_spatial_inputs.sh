@@ -31,7 +31,7 @@ for layout in central iid skew08; do
     --montage-dir data/wsi/fixed849_spatial16_montages \
     --output "data/fixed849_spatial16_$layout"
   python scripts/check_fusion_splits.py --prepared data/fixed849_disjoint_paired \
-    --export "data/fixed849_spatial16_$layout"
+    --export "data/fixed849_spatial16_$layout" --check-client-groups
 done
 python - <<'PY'
 import csv, json
@@ -46,11 +46,14 @@ for layout in ['central','iid','skew08']:
         with (p/'site_assignments.tsv').open() as f:
             return {(r['patient_id'],r['split'],r['site_id']) for r in csv.DictReader(f,delimiter='\t')}
     if assignments(old) != assignments(new):
-        raise ValueError(f'Client assignments changed: {layout}')
+        old_task=json.loads((old/'task.json').read_text())
+        if old_task.get('client_assignment_version') == 2:
+            raise ValueError(f'Canonical client assignments changed: {layout}')
+        print(f'NOTE {layout}: legacy sample-level assignments differ; regenerate both arms with regroup_fusion_inputs.sh.')
     for p in new.rglob('*.json'):
         if p.name not in ['train.json','validation.json','test.json']: continue
         for r in json.loads(p.read_text()):
             if r.get('image_selection') != 'spatial':
                 raise ValueError(f'Spatial prompt metadata missing: {p}')
-    print(f'PASS {layout}: same beta rows, splits, client assignments; spatial prompts verified.')
+    print(f'PASS {layout}: same beta rows and splits; canonical grouping and spatial prompts verified.')
 PY

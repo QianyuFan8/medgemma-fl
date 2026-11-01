@@ -183,6 +183,8 @@ class UtilsTests(unittest.TestCase):
         self.assertEqual(allocate(10, [0.8, 0.2, 0.8]), [5, 1, 4])  # stable tie-break favours the earlier site
         self.assertEqual(sum(allocate(7, [1, 1, 1])), 7)
         rows = [dict(patient_id=f"N{i}", diagnosis="NEG") for i in range(30)] + [dict(patient_id=f"P{i}", diagnosis="POS") for i in range(30)]
+        for row in rows:
+            row['canonical_uid'] = row['patient_id']
         sites = ["site-1", "site-2", "site-3"]
         skew = assign_sites(rows, sites, "skew", random.Random(0), 0.9)
         site2_pos = sum(1 for r in rows if r["diagnosis"] == "POS" and skew[r["patient_id"]] == "site-2")
@@ -239,7 +241,7 @@ class PipelineTests(unittest.TestCase):
             task = json.loads((meth / "task.json").read_text())
             self.assertEqual(task["panel_mode"], "shared")
             self.assertEqual(task["training_regime"], "simulated_federated")
-            validate_clients(meth / "clients", 3)
+            validate_clients(meth / "clients", 3, require_patient_groups=True)
             train = [r for i in (1, 2, 3) for r in json.loads((meth / f"clients/site-{i}/train.json").read_text())]
             test = json.loads((meth / "test.json").read_text())
             self.assertEqual(len(train), sum(1 for r in splits.values() if r["split"] == "train"))

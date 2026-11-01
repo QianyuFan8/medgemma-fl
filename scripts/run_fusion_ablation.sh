@@ -28,7 +28,11 @@ case "$mode" in
   data=${data_prefix}_${layout}; prefix=fl_${layout}_${method}; clients=3; gpus='[0],[0],[0]'; ranks=16,16,16;;
  *) exit 2;;
 esac
-python scripts/check_fusion_splits.py --prepared data/fixed849_disjoint_paired --export "$data"
+group_check=()
+# Historical checkpoints can still be evaluated on their original frozen inputs.
+# New training must use regenerated patient-grouped exports.
+if [[ $mode == *-train || $mode == *-smoke ]]; then group_check=(--check-client-groups); fi
+python scripts/check_fusion_splits.py --prepared data/fixed849_disjoint_paired --export "$data" "${group_check[@]}"
 root="runs/ablation_${scope}_${input_tag}_r${rounds}_e${epochs}"
 mkdir -p "$root/logs"
 case "$mode" in
