@@ -89,6 +89,8 @@ def define_parser():
     )
     parser.add_argument("--learning_rate", type=float, default=2e-4, help="Peak learning rate (default: 2e-4).")
     parser.add_argument("--seed", type=int, default=None, help="Explicit server/client initialization and training seed")
+    parser.add_argument('--save_adapter_epochs', type=int, nargs='+', default=[],
+                        help='Optional local epoch adapter snapshots (inference only).')
     parser.add_argument("--logging_steps", type=int, default=25)
     parser.add_argument("--eval_steps", type=int, default=50)
     parser.add_argument(
@@ -249,6 +251,8 @@ def _build_train_args(args, site_data_path: str, image_root: str, report_to: str
         train_args.extend(["--attn_implementation", args.attn_implementation])
     if args.seed is not None:
         train_args.extend(["--seed", str(args.seed)])
+    if getattr(args, 'save_adapter_epochs', None):
+        train_args.extend(['--save_adapter_epochs'] + [str(e) for e in args.save_adapter_epochs])
     train_args.extend(["--logging_steps", str(args.logging_steps), "--eval_steps", str(args.eval_steps)])
     if args.fl_method != "fedavg":
         train_args.extend(["--fl_method", args.fl_method, "--fedprox_mu", str(args.fedprox_mu),

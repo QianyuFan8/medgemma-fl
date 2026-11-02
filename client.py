@@ -34,7 +34,7 @@ from subtype_utils import build_multimodal_collator, format_subtype_example
 from lora_utils import build_uniform_lora_rank_map, truncate_global_bank_for_site
 from fl_methods import METHODS, FLMethodState, split_scaffold_params
 from model import MEDGEMMA_IMAGE_TOKEN_ID, apply_adapter_state, create_peft_medgemma_model, get_adapter_state_dict
-from transformers import AutoProcessor
+from transformers import AutoProcessor, TrainerCallback
 from trl import SFTConfig, SFTTrainer
 from utils import (
     abs_path,
@@ -49,6 +49,43 @@ from utils import (
 
 import nvflare.client as flare
 from nvflare.apis.fl_constant import FLMetaKey
+
+
+class EpochAdapterCheckpoint(TrainerCallback):
+    """Save inference-only adapter snapshots without changing Trainer scheduling."""
+
+    def __init__(self, epochs):
+        self.epochs = set(epochs)
+        self.saved = set()
+
+    def on_epoch_end(self, args, state, control, model=None, **kwargs):
+        import hashlib
+        import json
+        from pathlib import Path
+        import torch
+
+        epoch = round(state.epoch or 0)
+        if (epoch not in self.epochs or epoch in self.saved or
+                abs((state.epoch or 0) - epoch) > 1e-6 or not state.is_world_process_zero):
+            return control
+        root = Path(args.output_dir) / 'epoch_checkpoints'
+        root.mkdir(parents=True, exist_ok=True)
+        target = root / f'epoch-{epoch:02d}.pt'
+        if target.exists():
+            raise FileExistsError(target)
+        temporary = target.with_suffix('.pt.tmp')
+        # Use the same tensor naming/envelope as the existing inference loader.
+        weights = {'model.' + k: v for k, v in get_adapter_state_dict(model).items()}
+        torch.save({'model': weights}, temporary)
+        temporary.replace(target)
+        metadata = {'epoch': epoch, 'global_step': state.global_step,
+                    'planned_epochs': args.num_train_epochs,
+                    'checkpoint_sha256': hashlib.sha256(target.read_bytes()).hexdigest(),
+                    'purpose': 'inference_only_adapter_snapshot_not_optimizer_resume'}
+        target.with_suffix('.json').write_text(json.dumps(metadata, indent=2) + '\n')
+        self.saved.add(epoch)
+        print(f'SAVED_EPOCH_ADAPTER epoch={epoch} step={state.global_step} path={target}', flush=True)
+        return control
 
 
 def _load_site_split(json_path: str, image_root: str, task: str = "histology"):
@@ -214,7 +251,12 @@ def main():
         help="Local site LoRA rank. Incoming global banks are truncated to this rank before loading.",
     )
     parser.add_argument("--adapter_scope", choices=("legacy", "lora-only"), default="legacy")
+    parser.add_argument('--save_adapter_epochs', type=int, nargs='+', default=[],
+                        help='Save adapter-only inference snapshots at selected local epoch ends.')
     args = parser.parse_args()
+    if args.save_adapter_epochs and (args.max_steps is not None or
+            any(e < 1 or e > args.num_train_epochs for e in args.save_adapter_epochs)):
+        parser.error('Snapshot epochs must be within num_train_epochs; max_steps is unsupported.')
     if args.seed is not None:
         from transformers import set_seed
         set_seed(args.seed)
@@ -326,10 +368,15 @@ def main():
             processing_class=processor,
             data_collator=collate_fn,
         )
+        epoch_callback = EpochAdapterCheckpoint(args.save_adapter_epochs)
+        if args.save_adapter_epochs:
+            trainer.add_callback(epoch_callback)
 
         sync_cuda()
         train_start_time = time.perf_counter()
         train_result = trainer.train()
+        if epoch_callback.saved != set(args.save_adapter_epochs):
+            raise RuntimeError('Training did not save every requested epoch checkpoint')
         sync_cuda()
         train_runtime_sec = time.perf_counter() - train_start_time
         train_loss = float(getattr(train_result, "training_loss", float("nan")))
