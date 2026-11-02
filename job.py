@@ -88,6 +88,9 @@ def define_parser():
         help="Local epochs per client round when --max_steps is not set (default: 1).",
     )
     parser.add_argument("--learning_rate", type=float, default=2e-4, help="Peak learning rate (default: 2e-4).")
+    parser.add_argument("--seed", type=int, default=None, help="Explicit server/client initialization and training seed")
+    parser.add_argument("--logging_steps", type=int, default=25)
+    parser.add_argument("--eval_steps", type=int, default=50)
     parser.add_argument(
         "--per_device_train_batch_size",
         type=int,
@@ -244,6 +247,9 @@ def _build_train_args(args, site_data_path: str, image_root: str, report_to: str
     ]
     if args.attn_implementation:
         train_args.extend(["--attn_implementation", args.attn_implementation])
+    if args.seed is not None:
+        train_args.extend(["--seed", str(args.seed)])
+    train_args.extend(["--logging_steps", str(args.logging_steps), "--eval_steps", str(args.eval_steps)])
     if args.fl_method != "fedavg":
         train_args.extend(["--fl_method", args.fl_method, "--fedprox_mu", str(args.fedprox_mu),
                            "--fedlc_tau", str(args.fedlc_tau)])
@@ -310,7 +316,8 @@ def main():
 
     model = {
         "class_path": "model.MedGemmaLoRAModel",
-        "args": {"model_name_or_path": args.model_name_or_path, "lora_rank": args.global_lora_rank, "adapter_scope": args.adapter_scope},
+        "args": {"model_name_or_path": args.model_name_or_path, "lora_rank": args.global_lora_rank,
+                 "adapter_scope": args.adapter_scope, "seed": args.seed},
     }
 
     recipe = FedAvgRecipe(

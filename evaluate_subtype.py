@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import math
 
 from methylation_validate import validate_clients
 from subtype_utils import SUBTYPE_CLASSES, format_subtype_example, subtype_metrics
@@ -50,6 +51,34 @@ def evaluate_rows(rows, reference, classes, positive):
         raise ValueError("Prediction ground truths disagree with reference")
     return subtype_metrics([r["truth"] for r in rows], [r["prediction"] for r in rows],
                            [positive_score(r, positive, classes) for r in rows], classes, positive)
+
+
+def evaluation_reference(root, split, task):
+    root = Path(root)
+    if split == 'train':
+        return [r for site in task['sites']
+                for r in json.loads((root / 'clients' / site / 'train.json').read_text())]
+    return json.loads((root / f'{split}.json').read_text())
+
+
+def patient_score_metrics(rows, root):
+    from fusion_identity import validate_patient_rows
+    with (Path(root) / 'splits.tsv').open(newline='') as f:
+        signature = validate_patient_rows(list(csv.DictReader(f, delimiter='\t')))
+    grouped = {}
+    for row in rows:
+        uid, _, label = signature[row['patient_id']]
+        if row['truth'] != label:
+            raise ValueError('Prediction truth disagrees with canonical manifest')
+        score = positive_score(row, 'POS', ['NEG', 'POS'])
+        if not math.isfinite(score) or not 0 <= score <= 1:
+            raise ValueError('Invalid POS probability')
+        grouped.setdefault(uid, {'label': label, 'scores': []})['scores'].append(score)
+    truth = [r['label'] for _, r in sorted(grouped.items())]
+    scores = [math.fsum(r['scores']) / len(r['scores']) for _, r in sorted(grouped.items())]
+    result = subtype_metrics(truth, ['POS' if s >= 0.5 else 'NEG' for s in scores], scores, ['NEG', 'POS'])
+    return {'unit': 'canonical_patient', 'n_patients': len(grouped), 'n_records': len(rows),
+            'aggregation': 'mean_score_POS', 'threshold': 0.5, **result}
 
 
 def lenient_parse(raw, classes):
@@ -108,7 +137,7 @@ def main():
     p.add_argument("mode", choices=("ridge", "medgemma", "compare"))
     p.add_argument("--data-dir", required=True, help="prepare_comet_subtype.py export directory")
     p.add_argument("--output", required=True)
-    p.add_argument("--split", choices=("validation", "test"), default="validation")
+    p.add_argument("--split", choices=("train", "validation", "test"), default="validation")
     p.add_argument("--rscript", default="Rscript")
     p.add_argument("--r-library")
     p.add_argument("--model-path", help="MedGemma ID (zero-shot), adapter directory or NVFlare FL_global_model.pt")
@@ -121,6 +150,8 @@ def main():
     p.add_argument("--ridge-predictions")
     p.add_argument("--medgemma-predictions")
     args = p.parse_args()
+    if args.split == 'train' and args.mode != 'medgemma':
+        p.error('Train-set diagnostics are supported only for MedGemma')
     root, out = Path(args.data_dir), Path(args.output)
     if out.exists():
         raise FileExistsError(out)
@@ -129,7 +160,7 @@ def main():
         raise ValueError("Not a COMET fusion export")
     classes, positive = task["classes"], args.positive_class
     validate_clients(root / "clients", task["n_clients"])
-    reference = json.loads((root / f"{args.split}.json").read_text())
+    reference = evaluation_reference(root, args.split, task)
     if args.mode == "ridge":
         if task["modality"] == "image":
             p.error("Ridge needs CpG features; export a methylation or multimodal layout")
@@ -152,6 +183,7 @@ def main():
             model.to(args.device)
         predictions = [predict_one(model, processor, row, root, classes, args.max_seq_length, args.parse) for row in reference]
         results = evaluate_rows(predictions, reference, classes, positive)
+        results['patient_level_score_0_5'] = patient_score_metrics(predictions, root)
         site_by_patient = {r["patient_id"]: r["site_id"] for r in reference}
         results["by_site"] = {}
         for site in task["sites"]:
@@ -179,6 +211,7 @@ def main():
     report = {"mode": args.mode, "split": args.split, "panel_id": task["panel_id"], "modality": task["modality"],
               "training_regime": task.get("training_regime"), "partition": task.get("partition"),
               "arguments": vars(args), "metrics": results}
+    report['evaluation_purpose'] = 'training_fit_diagnostic' if args.split == 'train' else 'held_out_evaluation'
     if args.mode == 'medgemma' and Path(args.model_path).is_file():
         from fusion_threshold import digest
         report['checkpoint_sha256'] = digest(args.model_path)

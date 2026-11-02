@@ -192,8 +192,12 @@ def infer_uniform_lora_rank_from_state_dict(adapter_state: dict[str, Any]) -> in
 class MedGemmaLoRAModel(nn.Module):
     """Server-side initial model that exposes only LoRA adapter weights."""
 
-    def __init__(self, model_name_or_path: str = DEFAULT_MODEL_NAME_OR_PATH, lora_rank: int = DEFAULT_LORA_R, adapter_scope: str = "legacy"):
+    def __init__(self, model_name_or_path: str = DEFAULT_MODEL_NAME_OR_PATH, lora_rank: int = DEFAULT_LORA_R,
+                 adapter_scope: str = "legacy", seed: int | None = None):
         super().__init__()
+        if seed is not None:
+            from transformers import set_seed
+            set_seed(seed)
         self.model_name_or_path = model_name_or_path
         self.lora_rank = lora_rank
         self.model = create_peft_medgemma_model(

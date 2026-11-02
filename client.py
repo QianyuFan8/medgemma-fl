@@ -118,6 +118,9 @@ def _build_training_args(args, output_dir: str, do_eval: bool) -> SFTConfig:
     )
     if args.max_steps is not None:
         training_args["max_steps"] = args.max_steps
+    if getattr(args, "seed", None) is not None:
+        training_args["seed"] = args.seed
+        training_args["data_seed"] = args.seed
     if args.task in ("methylation", "subtype"):
         # Keep warmup_steps above: the VM's Transformers/TRL accepts a
         # fractional value here and no longer accepts warmup_ratio.
@@ -133,6 +136,7 @@ def _build_training_args(args, output_dir: str, do_eval: bool) -> SFTConfig:
 def main():
     parser = argparse.ArgumentParser(description="Federated MedGemma client with QLoRA-based local training.")
     parser.add_argument("--task", choices=("histology", "methylation", "subtype"), default="histology")
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--max_seq_length", type=int, default=4096)
     parser.add_argument("--attn_implementation", choices=("eager", "sdpa", "flash_attention_2"), default=None,
                         help="Attention kernel; default eager (notebook). Use sdpa for long CpG prompts.")
@@ -211,6 +215,9 @@ def main():
     )
     parser.add_argument("--adapter_scope", choices=("legacy", "lora-only"), default="legacy")
     args = parser.parse_args()
+    if args.seed is not None:
+        from transformers import set_seed
+        set_seed(args.seed)
 
     signal.signal(signal.SIGTERM, lambda _signum, _frame: sys.exit(0))
 
@@ -326,6 +333,12 @@ def main():
         sync_cuda()
         train_runtime_sec = time.perf_counter() - train_start_time
         train_loss = float(getattr(train_result, "training_loss", float("nan")))
+        os.makedirs(round_output_dir, exist_ok=True)
+        with open(os.path.join(round_output_dir, "training_diagnostics.json"), "w") as f:
+            json.dump({"seed": args.seed, "learning_rate": args.learning_rate,
+                       "num_train_epochs": args.num_train_epochs, "max_steps": args.max_steps,
+                       "global_step": trainer.state.global_step, "epoch": trainer.state.epoch, "training_loss": train_loss,
+                       "train_records": len(train_dataset), "log_history": trainer.state.log_history}, f, indent=2)
         metrics = {"loss": train_loss}
         eval_runtime_sec = 0.0
         if round_eval_dataset is not None:
