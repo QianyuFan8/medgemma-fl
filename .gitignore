@@ -19,6 +19,7 @@ target_data/processed/*.parquet
 /runs/
 /.epoch_diagnostics.lock
 /.epoch_diagnostics_*.latest
+/.zero_language_diagnostics_*.latest
 __pycache__/
 *.py[cod]
 /job.py.before-nvflare-fix

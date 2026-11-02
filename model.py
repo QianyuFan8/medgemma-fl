@@ -28,7 +28,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 from data_utils import DEFAULT_MODEL_NAME_OR_PATH
-from adapter_scope import saved_modules
+from adapter_scope import saved_modules, target_modules, trainable_summary
 from torch.nn.modules.module import _IncompatibleKeys
 from transformers import AutoModelForImageTextToText, BitsAndBytesConfig
 
@@ -48,7 +48,7 @@ def create_lora_config(lora_rank: int = DEFAULT_LORA_R, adapter_scope: str = "le
         r=lora_rank,
         bias="none",
         ensure_weight_tying=True,
-        target_modules=DEFAULT_TARGET_MODULES,
+        target_modules=target_modules(adapter_scope),
         task_type="CAUSAL_LM",
         modules_to_save=saved_modules(adapter_scope),
     )
@@ -151,7 +151,9 @@ def create_peft_medgemma_model(
                                           attn_implementation=attn_implementation)
     if quantized:
         base_model = prepare_model_for_kbit_training(base_model)
-    return get_peft_model(base_model, create_lora_config(lora_rank=lora_rank, adapter_scope=adapter_scope))
+    model = get_peft_model(base_model, create_lora_config(lora_rank=lora_rank, adapter_scope=adapter_scope))
+    trainable_summary(model, adapter_scope)  # Fail before training if the requested scope is violated.
+    return model
 
 
 def apply_adapter_state(model, adapter_state: dict[str, Any]) -> None:

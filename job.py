@@ -147,7 +147,7 @@ def define_parser():
         default="/tmp/nvflare/simulation",
         help="Simulation workspace root (default: /tmp/nvflare/simulation).",
     )
-    parser.add_argument("--adapter_scope", choices=("legacy", "lora-only"), default="legacy")
+    parser.add_argument("--adapter_scope", choices=("legacy", "lora-only", "language-only"), default="legacy")
     return parser.parse_args()
 
 

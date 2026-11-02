@@ -250,7 +250,7 @@ def main():
         default=16,
         help="Local site LoRA rank. Incoming global banks are truncated to this rank before loading.",
     )
-    parser.add_argument("--adapter_scope", choices=("legacy", "lora-only"), default="legacy")
+    parser.add_argument("--adapter_scope", choices=("legacy", "lora-only", "language-only"), default="legacy")
     parser.add_argument('--save_adapter_epochs', type=int, nargs='+', default=[],
                         help='Save adapter-only inference snapshots at selected local epoch ends.')
     args = parser.parse_args()

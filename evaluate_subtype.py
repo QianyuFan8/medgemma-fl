@@ -5,7 +5,8 @@ MedGemma levels share this entry point:
   Baseline 2 (centralized)    --model-path <FL_global_model.pt from a 1-client job>
   Federated                   --model-path <FL_global_model.pt from a 3-client job>
 Class probabilities come from teacher-forced log-likelihoods of each option, so
-ROC-AUC / PR-AUC are available for every level; the generated text gives the hard label.
+ROC-AUC / PR-AUC are available for every level. --prediction-source option_scores
+uses the higher-scoring candidate as the hard label, independently of generation.
 """
 from __future__ import annotations
 
@@ -100,7 +101,16 @@ def encode(processor, text, images, device):
     return batch.to(device)
 
 
-def predict_one(model, processor, row, data_dir, classes, max_seq_length, parse):
+def option_prediction(classes, probabilities):
+    if (len(classes) != len(probabilities) or not classes or
+            any(not math.isfinite(p) or not 0 <= p <= 1 for p in probabilities)):
+        raise ValueError('Invalid candidate probabilities')
+    # POS is last; ties agree with the patient-level score_POS >= 0.5 rule.
+    return classes[max(range(len(classes)), key=lambda i: (probabilities[i], i))]
+
+
+def predict_one(model, processor, row, data_dir, classes, max_seq_length, parse,
+                prediction_source='generated', skip_generation=False):
     import torch
     from PIL import Image
     from inference_utils import get_model_device
@@ -114,8 +124,10 @@ def predict_one(model, processor, row, data_dir, classes, max_seq_length, parse)
     if n + 32 > max_seq_length:
         raise ValueError("Prompt too long; no silent truncation is allowed")
     with torch.inference_mode():
-        generated = model.generate(**inputs, max_new_tokens=32, do_sample=False)
-        raw = processor.tokenizer.decode(generated[0, n:], skip_special_tokens=True).strip()
+        raw = ''
+        if not skip_generation:
+            generated = model.generate(**inputs, max_new_tokens=32, do_sample=False)
+            raw = processor.tokenizer.decode(generated[0, n:], skip_special_tokens=True).strip()
         logps = []
         for cls in classes:
             full = encode(processor, prompt + cls, images, device)
@@ -125,7 +137,8 @@ def predict_one(model, processor, row, data_dir, classes, max_seq_length, parse)
             logits = model(**full).logits[0, n - 1:-1].float()
             logps.append(torch.log_softmax(logits, -1).gather(1, ids[0, n:].unsqueeze(1)).sum())
         probs = torch.stack(logps).softmax(0).tolist()
-    prediction = raw if raw in classes else (lenient_parse(raw, classes) if parse == "lenient" else "<unparsed>")
+    prediction = (option_prediction(classes, probs) if prediction_source == 'option_scores' else
+                  raw if raw in classes else (lenient_parse(raw, classes) if parse == "lenient" else "<unparsed>"))
     out = {"patient_id": row["patient_id"], "truth": row["label_name"], "prediction": prediction, "raw_response": raw}
     out.update({f"score_{c}": p for c, p in zip(classes, probs)})
     out.update({f"logp_{c}": float(lp) for c, lp in zip(classes, logps)})
@@ -146,10 +159,14 @@ def main():
     p.add_argument("--max-seq-length", type=int, default=4096)
     p.add_argument("--parse", choices=("strict", "lenient"), default="strict",
                    help="strict = exact option text (fine-tuned models); lenient = first option mentioned (zero-shot)")
+    p.add_argument('--prediction-source', choices=('generated', 'option_scores'), default='generated')
+    p.add_argument('--skip-generation', action='store_true', help='Score candidates without generating free text.')
     p.add_argument("--positive-class", default=SUBTYPE_CLASSES[-1])
     p.add_argument("--ridge-predictions")
     p.add_argument("--medgemma-predictions")
     args = p.parse_args()
+    if args.skip_generation and (args.mode != 'medgemma' or args.prediction_source != 'option_scores'):
+        p.error('--skip-generation requires medgemma --prediction-source option_scores')
     if args.split == 'train' and args.mode != 'medgemma':
         p.error('Train-set diagnostics are supported only for MedGemma')
     root, out = Path(args.data_dir), Path(args.output)
@@ -181,7 +198,8 @@ def main():
         model, processor = load_model_and_processor(args.model_path, args.base_model, args.device)
         if not args.device.startswith("cuda"):
             model.to(args.device)
-        predictions = [predict_one(model, processor, row, root, classes, args.max_seq_length, args.parse) for row in reference]
+        predictions = [predict_one(model, processor, row, root, classes, args.max_seq_length, args.parse,
+                                   args.prediction_source, args.skip_generation) for row in reference]
         results = evaluate_rows(predictions, reference, classes, positive)
         results['patient_level_score_0_5'] = patient_score_metrics(predictions, root)
         site_by_patient = {r["patient_id"]: r["site_id"] for r in reference}

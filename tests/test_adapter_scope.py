@@ -2,7 +2,7 @@ import ast
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
-from adapter_scope import saved_modules, infer_adapter_scope, trainable_summary
+from adapter_scope import saved_modules, infer_adapter_scope, trainable_summary, target_modules
 
 class AdapterScopeTests(unittest.TestCase):
     def test_legacy_and_lora_checkpoint_detection(self):
@@ -30,12 +30,16 @@ class AdapterScopeTests(unittest.TestCase):
         fn=next(n for n in t.body if isinstance(n,ast.FunctionDef) and n.name=='create_lora_config')
         fn.body=[n for n in fn.body if not isinstance(n,ast.ImportFrom)]
         ns=dict(DEFAULT_LORA_R=16,DEFAULT_LORA_ALPHA=16,DEFAULT_LORA_DROPOUT=.05,
-                DEFAULT_TARGET_MODULES='all-linear',saved_modules=saved_modules,
+                DEFAULT_TARGET_MODULES='all-linear',saved_modules=saved_modules,target_modules=target_modules,
                 LoraConfig=lambda **kw:kw)
         exec(compile(ast.Module(body=[fn],type_ignores=[]),str(p),'exec'),ns)
         legacy=ns['create_lora_config'](); pure=ns['create_lora_config'](adapter_scope='lora-only')
         self.assertEqual(legacy['r'],pure['r'])
         self.assertIsNone(pure['modules_to_save'])
         self.assertEqual(legacy['modules_to_save'],['lm_head','embed_tokens'])
+        language=ns['create_lora_config'](adapter_scope='language-only')
+        self.assertEqual(language['target_modules'], target_modules('language-only'))
+        self.assertIsNone(language['modules_to_save'])
+        self.assertEqual(language['r'], pure['r'])
 
 if __name__=='__main__':unittest.main()
