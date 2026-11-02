@@ -4,13 +4,14 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from PIL import Image
 from evaluate_subtype import evaluation_reference, patient_score_metrics
 from methylation_utils import panel_fingerprint
 from prepare_comet_subtype import write_tsv
 from prepare_central_diagnostics import make_plan, prepare, select_tiny_records
-from run_central_diagnostics import train_command, verify_training
+from run_central_diagnostics import train_command, verify_training, evaluation_command, run_experiment
 from scripts.check_fusion_splits import inspect, inspect_clients
 from test_training_args import load_builder
 from types import SimpleNamespace
@@ -124,6 +125,57 @@ class DiagnosticsTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 verify_training(root, 10, False)
             self.assertEqual(verify_training(root, 10, True)['global_step'], 1)
+
+    def test_training_workspace_never_used_as_evaluation_output(self):
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td)
+            workspace = dest / 'train'; workspace.mkdir()
+            # Reproduce the old failure before any GPU/model import occurs.
+            from evaluate_subtype import main as evaluate_main
+            with patch('sys.argv', ['evaluate_subtype.py', 'medgemma', '--data-dir', str(dest),
+                                    '--output', str(workspace), '--split', 'train']):
+                with self.assertRaises(FileExistsError):
+                    evaluate_main()
+            for split in ('train', 'validation'):
+                cmd = evaluation_command(Path('data'), Path('model.pt'), dest, split)
+                output = Path(cmd[cmd.index('--output') + 1])
+                self.assertNotEqual(output, workspace)
+                self.assertFalse(output.exists())
+
+    def test_resume_reuses_completed_weights_then_evaluates_without_overwriting(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); dest = root / '01_tiny_fit'
+            workspace = dest / 'train'
+            checkpoint = workspace / 'medgemma/server/simulate_job/app_server/FL_global_model.pt'
+            checkpoint.parent.mkdir(parents=True)
+            checkpoint.write_bytes(b'previously trained adapter')
+            (workspace / 'training_diagnostics.json').write_text(json.dumps({
+                'global_step': 40, 'epoch': 20, 'training_loss': 0.1, 'seed': 42, 'learning_rate': 2e-4}))
+            (dest / 'train.log').write_text('old failed evaluation log')
+            ex = make_plan()[0]; calls = []
+            def fake_stage(cmd, log, stage, status_path, status):
+                calls.append(cmd)
+                self.assertEqual(cmd[2], 'evaluate_subtype.py')
+                out = Path(cmd[cmd.index('--output') + 1]); out.mkdir()
+                (out / 'evaluation.json').write_text(json.dumps({
+                    'split': 'train', 'arguments': {'model_path': str(checkpoint), 'data_dir': 'data/tiny'}}))
+                (out / 'predictions.csv').write_text('patient_id,truth,score_POS\n')
+                log.write_text('evaluation completed')
+            with patch('run_central_diagnostics.run_stage', side_effect=fake_stage):
+                run_experiment(ex, Path('data/tiny'), dest, 42, False, True, root/'status.json', {})
+                run_experiment(ex, Path('data/tiny'), dest, 42, False, True, root/'status.json', {})
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(checkpoint.read_bytes(), b'previously trained adapter')
+            self.assertEqual((dest/'train.log').read_text(), 'old failed evaluation log')
+
+    def test_resume_rejects_incomplete_training(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); dest = root/'01_tiny_fit'
+            (dest/'train').mkdir(parents=True)
+            with patch('run_central_diagnostics.run_stage') as stage:
+                with self.assertRaisesRegex(RuntimeError, 'refusing overwrite'):
+                    run_experiment(make_plan()[0], Path('data/tiny'), dest, 42, False, True, root/'status.json', {})
+                stage.assert_not_called()
 
 
 if __name__ == '__main__':
