@@ -158,9 +158,48 @@ def make_subtype_record(patient_id, diagnosis, probes, values, classes, modality
     return record
 
 
+def example_image_count(example):
+    layout = example.get('image_layout', 'montage')
+    if layout not in ('montage', 'tiles16'):
+        raise ValueError('Unknown image layout')
+    if not example.get('image'):
+        if layout == 'tiles16':
+            raise ValueError('Separate tiles require a source montage')
+        return 0
+    return 16 if layout == 'tiles16' else 1
+
+
+def load_example_images(example, image_root=None):
+    """Read identical RGB regions for training and candidate-score inference.
+
+    tiles16 reuses the verified 4x4 PNG as a lossless container. The model receives
+    sixteen independent images, never the container itself. A record stays one
+    patient/specimen example; tiles do not become separate labeled examples.
+    """
+    count = example_image_count(example)
+    if not count:
+        return []
+    from PIL import Image
+    source = example['image']
+    if isinstance(source, (str, Path)):
+        path = Path(source)
+        if not path.is_absolute() and image_root is not None:
+            path = Path(image_root) / path
+        with Image.open(path) as im:
+            source = im.convert('RGB')
+    else:
+        source = source.convert('RGB')
+    if count == 1:
+        return [source]
+    if source.size != (896, 896):
+        raise ValueError('tiles16 requires an exact 896x896 montage of 224x224 tiles')
+    return [source.crop((i % 4 * 224, i // 4 * 224,
+                         (i % 4 + 1) * 224, (i // 4 + 1) * 224)) for i in range(16)]
+
+
 def format_subtype_example(example):
     content = []
-    if example.get("image"):
+    for _ in range(example_image_count(example)):
         content.append({"type": "image"})
     content.append({"type": "text", "text": example["prompt"]})
     return {**example, "messages": [
@@ -177,7 +216,11 @@ def build_multimodal_collator(processor, max_length=4096, image_token_id=262144)
         texts, prefixes, images = [], [], []
         for example in examples:
             messages = example["messages"]
-            images.append([example["image"].convert("RGB")])
+            image_list = load_example_images(example)
+            placeholders = sum(c.get('type') == 'image' for c in messages[0]['content'])
+            if not image_list or placeholders != len(image_list):
+                raise ValueError('Image placeholders do not match patient image count')
+            images.append(image_list)
             prefixes.append(processor.apply_chat_template(messages[:1], add_generation_prompt=True, tokenize=False))
             texts.append(processor.apply_chat_template(messages, add_generation_prompt=False, tokenize=False))
         batch = processor(text=texts, images=images, return_tensors="pt", padding=True)

@@ -55,6 +55,11 @@ def validate_clients(data_dir, n_clients, require_patient_groups=False):
                 raise ValueError('Image presence does not match task modality')
             if has_image and not (root.parent / r['image']).is_file():
                 raise ValueError(f"Missing montage image: {r['image']}")
+            layout = r.get('image_layout', 'montage')
+            if layout not in ('montage', 'tiles16') or layout != task.get('image_layout', 'montage'):
+                raise ValueError('Record image layout differs from task layout')
+            if layout == 'tiles16' and modality != 'image':
+                raise ValueError('Separate-tile diagnostics require H&E-only inputs')
     for r in heldout:
         check_record(r)
     seen = {r["patient_id"] for r in heldout}
