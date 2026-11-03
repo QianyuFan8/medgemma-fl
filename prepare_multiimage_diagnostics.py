@@ -1,4 +1,4 @@
-"""Derive an H&E-only, sixteen-images-per-record export without changing splits."""
+"""Derive a sixteen-images-per-record export without changing splits or CpG text."""
 import csv
 import hashlib
 import json
@@ -15,14 +15,14 @@ def signature(root):
         return validate_patient_rows(list(csv.DictReader(f, delimiter='\t')))
 
 
-def convert_record(record):
-    if record.get('modality') != 'image' or not record.get('image'):
-        raise ValueError('Expected H&E-only source records')
+def convert_record(record, modality='image'):
+    if modality not in ('image', 'multimodal') or record.get('modality') != modality or not record.get('image'):
+        raise ValueError('Expected image-bearing source records of the requested modality')
     if record.get('image_layout', 'montage') != 'montage':
         raise ValueError('Source must be the original montage export')
     prompt = record['prompt']
     marker = '[H&E]\n'
-    if prompt.count(marker) != 1 or '[DNA methylation]' in prompt:
+    if prompt.count(marker) != 1 or prompt.count('[DNA methylation]') != int(modality == 'multimodal'):
         raise ValueError('Unexpected source prompt; refusing implicit modality changes')
     before, section = prompt.split(marker)
     _, separator, after = section.partition('\n\n')
@@ -35,11 +35,11 @@ def convert_record(record):
             'prompt': before + marker + description + '\n\n' + after}
 
 
-def prepare(source_root, output):
+def prepare(source_root, output, modality='image'):
     source, output = Path(source_root).resolve(), Path(output).resolve()
     task = validate_clients(source / 'clients', 1, require_patient_groups=True)
-    if task['modality'] != 'image' or task['classes'] != ['NEG', 'POS']:
-        raise ValueError('Expected a one-client fusion image-only export')
+    if task['modality'] != modality or modality not in ('image', 'multimodal') or task['classes'] != ['NEG', 'POS']:
+        raise ValueError('Expected a one-client fusion export of the requested modality')
     original = signature(source)
     if output.exists():
         raise FileExistsError(output)
@@ -53,10 +53,10 @@ def prepare(source_root, output):
         if path.name not in ('train.json', 'validation.json', 'test.json'):
             continue
         rows = json.loads(path.read_text())
-        updated = [convert_record(r) for r in rows]
+        updated = [convert_record(r, modality) for r in rows]
         # Reading image dimensions/pixels does not evaluate held-out outcomes.
         for old, new in zip(rows, updated):
-            for key in ('patient_id', 'canonical_uid', 'label_name', 'image', 'panel_id', 'site_id'):
+            for key in set(old) - {'prompt', 'prompt_style', 'image_layout'}:
                 if old.get(key) != new.get(key):
                     raise ValueError('Record identity changed during export')
             rel = old['image']
@@ -72,7 +72,7 @@ def prepare(source_root, output):
     if signature(output) != original:
         raise ValueError('Patient identity/split/label signature changed')
     validate_clients(output / 'clients', 1, require_patient_groups=True)
-    report = {'source_image_export': str(source), 'records_per_file': counts,
+    report = {'source_image_export': str(source), 'modality': modality, 'records_per_file': counts,
               'source_split_sha256': hashlib.sha256((source / 'splits.tsv').read_bytes()).hexdigest(),
               'images_sha256': image_hashes, 'image_layout': 'tiles16',
               'one_record_one_target': True, 'split_or_label_changes': False,
@@ -95,7 +95,8 @@ def processor_preflight(data, output):
     soft_id = processor.tokenizer.convert_tokens_to_ids('<image_soft_token>')
     report = {'image_layout': 'tiles16', 'model_inference_performed': False, 'checks': []}
     for split in ('train', 'validation'):
-        row = max(evaluation_reference(root, split, task), key=lambda r: len(r['prompt']))
+        row = max(evaluation_reference(root, split, task),
+                  key=lambda r: len(processor.tokenizer(r['prompt'], add_special_tokens=False)['input_ids']))
         training_row = format_subtype_example(row)
         training_row['image'] = str(root / row['image'])
         batch = build_multimodal_collator(processor, 32768)([training_row])

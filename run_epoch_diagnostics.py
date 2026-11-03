@@ -26,13 +26,13 @@ def experiments():
             dict(name='image_lr5e5', dataset='image', epochs=10, learning_rate=5e-5)]
 
 
-def snapshot(workspace, epoch):
+def snapshot(workspace, epoch, planned_epochs=10):
     matches = list(workspace.rglob(f'epoch_checkpoints/epoch-{epoch:02d}.pt'))
     if len(matches) != 1:
         raise RuntimeError(f'Expected exactly one epoch {epoch} adapter; found {len(matches)}')
     path = matches[0]
     info = json.loads(path.with_suffix('.json').read_text())
-    if (info['epoch'] != epoch or info['planned_epochs'] != 10 or info['global_step'] <= 0 or
+    if (info['epoch'] != epoch or info['planned_epochs'] != planned_epochs or info['global_step'] <= 0 or
             info['checkpoint_sha256'] != hashlib.sha256(path.read_bytes()).hexdigest()):
         raise RuntimeError(f'Invalid checkpoint metadata or checksum: {path}')
     return path

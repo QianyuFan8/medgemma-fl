@@ -58,8 +58,8 @@ def validate_clients(data_dir, n_clients, require_patient_groups=False):
             layout = r.get('image_layout', 'montage')
             if layout not in ('montage', 'tiles16') or layout != task.get('image_layout', 'montage'):
                 raise ValueError('Record image layout differs from task layout')
-            if layout == 'tiles16' and modality != 'image':
-                raise ValueError('Separate-tile diagnostics require H&E-only inputs')
+            if layout == 'tiles16' and modality not in ('image', 'multimodal'):
+                raise ValueError('Separate-tile diagnostics require an image-bearing modality')
     for r in heldout:
         check_record(r)
     seen = {r["patient_id"] for r in heldout}

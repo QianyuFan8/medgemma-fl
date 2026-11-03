@@ -9,7 +9,7 @@ from pathlib import Path
 
 from methylation_utils import encode_methylation_example, format_methylation_example
 from methylation_validate import validate_clients
-from subtype_utils import IMAGE_TOKEN_RESERVE
+from subtype_utils import IMAGE_TOKEN_RESERVE, example_image_count
 
 
 def measure_context(root, processor):
@@ -23,9 +23,9 @@ def measure_context(root, processor):
         maximum, count = 0, 0
         for path in paths:
             for row in json.loads(path.read_text()):
-                # Text is measured without the image; an image adds a fixed soft-token reserve.
+                # Text is measured separately; reserve tokens for EVERY image.
                 example = format_methylation_example({**row, "image": None})
-                image_reserve = IMAGE_TOKEN_RESERVE if row.get("image") else 0
+                image_reserve = IMAGE_TOKEN_RESERVE * example_image_count(row)
                 user = processor.apply_chat_template(example["messages"][:1], add_generation_prompt=True, tokenize=False)
                 needed = len(processor.tokenizer(user, add_special_tokens=False)["input_ids"]) + 32 + image_reserve
                 if split == "train":
