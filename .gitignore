@@ -22,6 +22,7 @@ target_data/processed/*.parquet
 /.zero_language_diagnostics_*.latest
 /.multiimage_diagnostics_*.latest
 /.multimodal_tiles60_*.latest
+/.spatial20_inference.latest
 __pycache__/
 *.py[cod]
 /job.py.before-nvflare-fix
