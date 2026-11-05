@@ -52,8 +52,10 @@ def define_parser():
         "--sim_threads",
         type=int,
         default=None,
-        help="Simulator threads (default: one per client). 1 runs clients one after another to share a single GPU.",
+        help="Simulator control threads; external training processes need --client_gpu_lock to share one GPU.",
     )
+    parser.add_argument("--client_gpu_lock", default=None,
+                        help="Shared absolute GPU lock file for persistent external clients.")
     parser.add_argument("--n_clients", type=int, default=3, help="Number of federated clients (default: 3).")
     parser.add_argument("--num_rounds", type=int, default=3, help="Federated rounds (default: 3).")
     parser.add_argument(
@@ -250,6 +252,8 @@ def _build_train_args(args, site_data_path: str, image_root: str, report_to: str
         "--lora_rank",
         str(local_lora_rank),
     ]
+    if getattr(args, "client_gpu_lock", None):
+        train_args.extend(["--client_gpu_lock", os.path.abspath(args.client_gpu_lock)])
     if args.attn_implementation:
         train_args.extend(["--attn_implementation", args.attn_implementation])
     if args.seed is not None:

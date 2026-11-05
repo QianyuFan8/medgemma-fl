@@ -15,6 +15,18 @@ except ImportError:
 
 @unittest.skipUnless(AVAILABLE,'Requires the VM torch/NVFlare environment')
 class SnapshotTests(unittest.TestCase):
+    def test_shared_gpu_lock_is_forwarded_to_every_external_client(self):
+        import shlex
+        from unittest.mock import patch
+        from job import define_parser, _build_train_args
+        with tempfile.TemporaryDirectory(prefix='gpu lock ') as td:
+            lock = str(Path(td)/'shared.lock')
+            with patch('sys.argv', ['job.py', '--client_gpu_lock', lock]):
+                args = define_parser()
+            for site in ('site-1', 'site-2', 'site-3'):
+                cmd = shlex.split(_build_train_args(args, f'/data/{site}', '/data', 'none', 16))
+                self.assertEqual(cmd[cmd.index('--client_gpu_lock')+1], lock)
+
     def test_actual_flare_job_export_serializes_snapshot_configuration(self):
         from nvflare.app_opt.pt.recipes.fedavg import FedAvgRecipe
         with tempfile.TemporaryDirectory() as td:
@@ -31,6 +43,7 @@ class SnapshotTests(unittest.TestCase):
             self.assertIn('federated_snapshots.SnapshotNaiveAggregator',text)
             self.assertIn('save_rounds',text)
             self.assertTrue(list(Path(td).rglob('federated_snapshots.py')))
+            self.assertTrue(list(Path(td).rglob('client_gpu_lock.py')))
 
     def test_global_snapshots_are_weighted_post_aggregation_and_round_number_survives_reset(self):
         with tempfile.TemporaryDirectory() as td:
