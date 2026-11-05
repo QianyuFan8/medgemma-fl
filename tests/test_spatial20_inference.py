@@ -10,12 +10,23 @@ from unittest.mock import patch
 import numpy as np
 from PIL import Image
 
-from run_spatial20_inference import extend_selection, original_indices, prepare_pairs, prompt_for_twenty
+from run_spatial20_inference import (extend_selection, original_indices, prepare_pairs, prompt_for_twenty,
+                                     save_prepared_manifest, load_prepared_pairs, validate_weight_scope)
 from prepare_multiimage_diagnostics import convert_record
 from subtype_utils import make_subtype_record
 
 
 class SpatialTwentyTests(unittest.TestCase):
+    def test_adapter_scope_is_verified(self):
+        language = {'base_model.model.language_model.layers.0.q_proj.lora_A.default.weight': None}
+        both = {**language, 'base_model.model.vision_tower.layers.0.q_proj.lora_B.default.weight': None}
+        validate_weight_scope(language, 'language-only')
+        validate_weight_scope(both, 'lora-only')
+        with self.assertRaises(ValueError): validate_weight_scope(language, 'lora-only')
+        with self.assertRaises(ValueError): validate_weight_scope(both, 'language-only')
+        with self.assertRaises(ValueError):
+            validate_weight_scope({**both, 'base_model.model.lm_head.weight': None}, 'lora-only')
+
     def test_preserves_original_order_and_appends_four_at_strict_distance(self):
         coords = np.array([(i * 448, 0) for i in range(25)])
         original = list(reversed(range(16)))
@@ -66,6 +77,7 @@ class SpatialTwentyTests(unittest.TestCase):
             row = convert_record(make_subtype_record('val1','POS',['cg00001'],[.123456],['NEG','POS'],
                                       'multimodal','images/x.png','site-1'), 'multimodal')
             (data/'validation.json').write_text(json.dumps([row]))
+            (data/'task.json').write_text('{}')
             with (data/'splits.tsv').open('w',newline='') as f:
                 writer=csv.DictWriter(f,fieldnames=['patient_id','canonical_uid','split','diagnosis','slide_id'],delimiter='\t')
                 writer.writeheader();writer.writerow(dict(patient_id='val1',canonical_uid='u1',split='validation',diagnosis='POS',slide_id='slide'))
@@ -94,6 +106,16 @@ class SpatialTwentyTests(unittest.TestCase):
             after = {str(p.relative_to(data)):p.read_bytes() for p in data.rglob('*') if p.is_file()}
             self.assertEqual(before,after)
             self.assertFalse(json.loads((base/'output/tile_audit.json').read_text())[0]['extra_tiles_spacing_relaxed'])
+            save_prepared_manifest(data, base/'output')
+            (base/'reuse').mkdir()
+            with patch('methylation_validate.validate_clients',return_value=dict(modality='multimodal',image_layout='tiles16',probes=list(range(849)))):
+                reused = load_prepared_pairs(data, base/'output', base/'reuse')
+                for a, b in zip(pairs, reused):
+                    self.assertEqual(a['prompt'], b['prompt'])
+                    self.assertEqual([im.tobytes() for im in a['images']], [im.tobytes() for im in b['images']])
+                (base/'output/tiles/slide/tile-19.png').write_bytes(b'corrupt')
+                with self.assertRaisesRegex(ValueError, 'tile checksum'):
+                    load_prepared_pairs(data, base/'output', base/'reuse')
 
 
 if __name__ == '__main__':

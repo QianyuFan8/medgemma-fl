@@ -1,4 +1,4 @@
-"""Paired validation-only 16-vs-20-image inference with one fixed V+L adapter.
+"""Paired validation-only 16-vs-20-image inference with one fixed adapter.
 
 The first sixteen images are reused byte-for-byte from the historical export.
 Four new raw-WSI regions must satisfy the requested spatial distance; no fallback
@@ -173,6 +173,81 @@ def prepare_pairs(data, montage_root, embeddings, abmil, slide_dir, output,
     return pairs
 
 
+def save_prepared_manifest(data, output):
+    write_json(output / 'prepared_inputs.json', dict(
+        version=1, split='validation', image_counts=[16, 20],
+        source_sha256={name: digest(data / name) for name in
+                       ('validation.json', 'splits.tsv', 'task.json')},
+        tile_audit_sha256=digest(output / 'tile_audit.json')))
+
+
+def load_prepared_pairs(data, prepared, output):
+    """Reuse verified pixels across VMs without copying whole-slide images."""
+    from PIL import Image
+    from methylation_validate import validate_clients
+    from subtype_utils import load_example_images
+    from fusion_identity import validate_patient_rows
+    task = validate_clients(data / 'clients', 1, require_patient_groups=True)
+    if task['modality'] != 'multimodal' or task.get('image_layout') != 'tiles16' or len(task['probes']) != 849:
+        raise ValueError('Expected the historical 16-image multimodal 849-CpG export')
+    meta = json.loads((prepared / 'prepared_inputs.json').read_text())
+    if meta['version'] != 1 or meta['split'] != 'validation' or meta['image_counts'] != [16, 20]:
+        raise ValueError('Unsupported prepared input bundle')
+    for name in ('validation.json', 'splits.tsv', 'task.json'):
+        if digest(data / name) != meta['source_sha256'][name]:
+            raise ValueError(f'Prepared bundle source mismatch: {name}')
+    if digest(prepared / 'tile_audit.json') != meta['tile_audit_sha256']:
+        raise ValueError('Prepared tile audit checksum mismatch')
+    audit = json.loads((prepared / 'tile_audit.json').read_text())
+    rows = json.loads((data / 'validation.json').read_text())
+    if [r['patient_id'] for r in rows] != [a['record_id'] for a in audit]:
+        raise ValueError('Prepared validation record order mismatch')
+    signature = validate_patient_rows(read_tsv(data / 'splits.tsv'))
+    pairs = []
+    for row, a in zip(rows, audit):
+        if signature[row['patient_id']][1:] != ('validation', row['label_name']):
+            raise ValueError('Prepared record is not a validation record')
+        sid = a['slide_id']
+        if (Path(sid).name != sid or len(a['tile_png_sha256']) != 20 or
+                not a['first_16_pixels_and_order_unchanged'] or a['extra_tiles_spacing_relaxed']):
+            raise ValueError('Invalid prepared tile audit')
+        if digest(data / row['image']) != a['source_image_sha256']:
+            raise ValueError('Historical montage checksum mismatch')
+        images16, images20 = load_example_images(row, data), []
+        for position, expected in enumerate(a['tile_png_sha256']):
+            path = prepared / 'tiles' / sid / f'tile-{position:02d}.png'
+            if digest(path) != expected:
+                raise ValueError(f'Prepared tile checksum mismatch: {sid}/{position}')
+            with Image.open(path) as im:
+                image = im.convert('RGB')
+            if image.size != (224, 224):
+                raise ValueError('Prepared tile size mismatch')
+            if position < 16 and image.tobytes() != images16[position].tobytes():
+                raise ValueError('Prepared baseline pixels differ from the historical input')
+            images20.append(image)
+        for count, imgs, prompt in [(16, images16, row['prompt']),
+                                   (20, images20, prompt_for_twenty(row['prompt']))]:
+            pairs.append(dict(record=row, image_count=count, images=imgs, prompt=prompt))
+    write_json(output / 'tile_audit.json', audit)
+    write_json(output / 'prepared_inputs.json', meta)
+    print(f'VERIFIED prepared inputs: {len(rows)} validation records, identical 16/20 tiles across VMs', flush=True)
+    return pairs
+
+
+def validate_weight_scope(weights, scope):
+    from adapter_scope import infer_adapter_scope
+    if infer_adapter_scope(weights) != scope:
+        raise ValueError('Checkpoint adapter scope mismatch')
+    if not weights or any('.lora_A.' not in k and '.lora_B.' not in k for k in weights):
+        raise ValueError('Expected adapter-only weights')
+    vision = any('.vision_tower.' in k for k in weights)
+    language = any('.language_model.' in k for k in weights)
+    if not language or vision != (scope == 'lora-only'):
+        raise ValueError('Checkpoint vision/language weights do not match the requested scope')
+    if scope == 'language-only' and any('.language_model.' not in k for k in weights):
+        raise ValueError('Language-only checkpoint contains non-language weights')
+
+
 def encode_pair(processor, pair):
     content = [{'type': 'image'} for _ in pair['images']]
     content.append({'type': 'text', 'text': pair['prompt']})
@@ -231,6 +306,8 @@ def main():
     p.add_argument('--source-run', required=True, help='Existing multimodal_tiles60 run directory, or its full subdirectory')
     p.add_argument('--output', required=True)
     p.add_argument('--epoch', type=int, default=60, choices=(2, 5, 10, 20, 30, 50, 60))
+    p.add_argument('--adapter-scope', choices=('lora-only', 'language-only'), default='lora-only')
+    p.add_argument('--prepared-inputs', help='Verified portable tile bundle; bypass raw WSI preparation')
     p.add_argument('--montage-root', default='data/wsi/fixed849_spatial16_montages')
     p.add_argument('--embeddings', default='data/wsi/hoptimus1')
     p.add_argument('--abmil', default='runs/fixed849_disjoint/abmil')
@@ -245,12 +322,12 @@ def main():
     manifest = json.loads((full / 'run_manifest.json').read_text())
     if manifest['arm'] != 'spatial16' or manifest['base_model'] != 'google/medgemma-1.5-4b-it':
         raise ValueError('Source must be the existing spatial16 multimodal MedGemma 60-epoch run')
-    source = full / 'multimodal_tiles16_lora-only_lr5e5'
+    source = full / f'multimodal_tiles16_{args.adapter_scope}_lr5e5'
     data = full / 'data'
     from run_epoch_diagnostics import snapshot
     from run_multimodal_tiles60 import verify_scope
     checkpoint = snapshot(source / 'train', args.epoch, planned_epochs=60)
-    verify_scope(source / 'train', 'lora-only')
+    verify_scope(source / 'train', args.adapter_scope)
     expected_path = source / f'epoch-{args.epoch:02d}' / 'eval_validation' / 'predictions.csv'
     with expected_path.open(newline='') as f:
         expected = {r['patient_id']: r for r in csv.DictReader(f)}
@@ -260,30 +337,30 @@ def main():
     write_json(output / 'status.json', status)
     write_json(output / 'run_manifest.json', dict(arguments=vars(args), source_run=str(full),
                checkpoint=str(checkpoint), checkpoint_sha256=digest(checkpoint),
-               adapter_scope='lora-only', split='validation', fixed_threshold=.5,
+               adapter_scope=args.adapter_scope, split='validation', fixed_threshold=.5,
                training_performed=False, test_evaluation_enabled=False,
                scoring='full_candidate_log_likelihood; answer-position logits only',
                source_split_sha256=digest(data / 'splits.tsv'),
                commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()))
     try:
-        pairs = prepare_pairs(data, Path(args.montage_root), Path(args.embeddings), Path(args.abmil),
-                              Path(args.slide_dir), output, args.candidate_pool)
+        if args.prepared_inputs:
+            pairs = load_prepared_pairs(data, Path(args.prepared_inputs), output)
+        else:
+            pairs = prepare_pairs(data, Path(args.montage_root), Path(args.embeddings), Path(args.abmil),
+                                  Path(args.slide_dir), output, args.candidate_pool)
+            save_prepared_manifest(data, output)
         if args.prepare_only:
             status.update(state='prepared', current_stage=None)
             return
         os.environ.update(MEDGEMMA_ATTN_IMPLEMENTATION='sdpa', TOKENIZERS_PARALLELISM='false')
         from transformers import AutoProcessor
         from inference_utils import load_model_and_processor, load_nvflare_global_pt
-        from adapter_scope import infer_adapter_scope
         from evaluate_subtype import patient_score_metrics
         processor = AutoProcessor.from_pretrained(manifest['base_model'], use_fast=False)
         processor.tokenizer.padding_side = 'left'
         preflight(processor, pairs, output, args.max_seq_length)
         weights = load_nvflare_global_pt(str(checkpoint))
-        if (infer_adapter_scope(weights) != 'lora-only' or
-                not any('.vision_tower.' in k and '.lora_' in k for k in weights) or
-                not any('.language_model.' in k and '.lora_' in k for k in weights)):
-            raise ValueError('Selected checkpoint does not contain both vision and language adapters')
+        validate_weight_scope(weights, args.adapter_scope)
         del weights
         model, processor = load_model_and_processor(str(checkpoint), manifest['base_model'], 'cuda')
         by_count = {16: [], 20: []}
@@ -311,7 +388,8 @@ def main():
         summary = []
         for count in (16, 20):
             m = patient_score_metrics(by_count[count], data)
-            summary.append(dict(images=count, epoch=args.epoch, n_patients=m['n_patients'], threshold=.5,
+            summary.append(dict(images=count, epoch=args.epoch, adapter_scope=args.adapter_scope,
+                                n_patients=m['n_patients'], threshold=.5,
                                 **{k: m[k] for k in ('accuracy', 'balanced_accuracy', 'roc_auc', 'pr_auc')},
                                 recall_NEG=m['recall']['NEG'], recall_POS=m['recall']['POS']))
         write_json(output / 'summary.json', summary)
