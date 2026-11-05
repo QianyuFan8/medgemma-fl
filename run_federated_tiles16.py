@@ -57,7 +57,14 @@ def verify_training(dest, scope, data, rounds, local_epochs, smoke=False):
         files = list(site_dir.rglob('training_diagnostics.json'))
         by_round = {int(f.parent.name.removeprefix('round-')): f for f in files}
         if len(files) != rounds or set(by_round) != set(range(rounds)):
-            raise RuntimeError(f'{site} did not complete all {rounds} rounds')
+            log = dest / 'training.log'
+            reason = ''
+            if log.is_file():
+                oom = next((line for line in log.read_text(errors='replace').splitlines()
+                            if 'OutOfMemoryError:' in line), None)
+                if oom:
+                    reason = f'; CUDA out of memory: {oom.strip()}'
+            raise RuntimeError(f'{site} did not complete all {rounds} rounds; inspect {log}{reason}')
         for r, path in sorted(by_round.items()):
             report = json.loads(path.read_text())
             if (report['global_step'] < 1 or not math.isfinite(report['training_loss']) or
@@ -118,12 +125,14 @@ def main():
             run_stage(training_command(root / layout, dest, a.scope, method, 1, a.local_epochs, True),
                       dest / 'training.log', name + ':smoke', status_path, status)
             write_json(dest / 'verified_training.json', verify_training(dest, a.scope, root / layout, 1, a.local_epochs, True))
+            print(f'VERIFIED {name}:smoke — all three clients and global checkpoint checked.', flush=True)
         for layout, method in CONFIGS:
             name = f'{layout}_{method}'
             dest = output / name; dest.mkdir()
             run_stage(training_command(root / layout, dest, a.scope, method, a.rounds, a.local_epochs),
                       dest / 'training.log', name + ':train', status_path, status)
             write_json(dest / 'verified_training.json', verify_training(dest, a.scope, root / layout, a.rounds, a.local_epochs))
+            print(f'VERIFIED {name}:train — all client rounds and global checkpoints checked.', flush=True)
             for r in saved_rounds(a.rounds):
                 checkpoint = dest / 'global_checkpoints' / f'round-{r:03d}.pt'
                 evaluation = dest / f'validation_round_{r:03d}'
