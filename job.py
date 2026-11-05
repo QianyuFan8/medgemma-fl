@@ -91,6 +91,9 @@ def define_parser():
     parser.add_argument("--seed", type=int, default=None, help="Explicit server/client initialization and training seed")
     parser.add_argument('--save_adapter_epochs', type=int, nargs='+', default=[],
                         help='Optional local epoch adapter snapshots (inference only).')
+    parser.add_argument('--save_global_rounds', type=int, nargs='+', default=[],
+                        help='Save post-aggregation global adapters after these 1-based rounds.')
+    parser.add_argument('--global_snapshot_dir', help='New output directory for global round adapters.')
     parser.add_argument("--logging_steps", type=int, default=25)
     parser.add_argument("--eval_steps", type=int, default=50)
     parser.add_argument(
@@ -324,6 +327,18 @@ def main():
                  "adapter_scope": args.adapter_scope, "seed": args.seed},
     }
 
+    if args.save_global_rounds:
+        if (args.lora_aggregation != 'naive' or not args.global_snapshot_dir or
+                min(args.save_global_rounds) < 1 or max(args.save_global_rounds) > args.num_rounds):
+            raise ValueError('Global snapshots require naive aggregation, a directory, and rounds within the budget')
+        from federated_snapshots import SnapshotNaiveAggregator
+        aggregator = SnapshotNaiveAggregator(args.global_lora_rank, os.path.abspath(args.global_snapshot_dir),
+                                               args.save_global_rounds, n_clients)
+    else:
+        aggregator = (HLoRAMaxRankAggregator(global_lora_rank=args.global_lora_rank)
+                      if args.lora_aggregation == 'hlora' else
+                      NaiveMaxRankAggregator(global_lora_rank=args.global_lora_rank))
+
     recipe = FedAvgRecipe(
         per_site_config=per_site_config,
         name=job_name,
@@ -331,11 +346,7 @@ def main():
         num_rounds=args.num_rounds,
         model=model,
         train_script="client.py",
-        aggregator=(
-            HLoRAMaxRankAggregator(global_lora_rank=args.global_lora_rank)
-            if args.lora_aggregation == "hlora"
-            else NaiveMaxRankAggregator(global_lora_rank=args.global_lora_rank)
-        ),
+        aggregator=aggregator,
         launch_external_process=True,
         server_expected_format="pytorch",
         key_metric="",

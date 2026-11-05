@@ -23,6 +23,7 @@ target_data/processed/*.parquet
 /.multiimage_diagnostics_*.latest
 /.multimodal_tiles60_*.latest
 /.spatial20_inference.latest
+/.federated_tiles16.latest
 __pycache__/
 *.py[cod]
 /job.py.before-nvflare-fix
