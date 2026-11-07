@@ -24,9 +24,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from subtype_utils import SUBTYPE_CLASSES, binary_auroc, binary_auprc
+from data_preprocessing.tile_selection import select_tiles, spatial_metrics
 
 
 def read_split_table(prepared):
+    spec = json.loads((Path(prepared) / 'features.json').read_text())
+    if spec.get('classes') != SUBTYPE_CLASSES:
+        raise ValueError('Expected a fusion NEG/POS preparation, not an old subtype panel')
     rows = []
     with (Path(prepared) / "splits.tsv").open(newline="") as f:
         for r in csv.DictReader(f, delimiter="\t"):
@@ -34,6 +38,10 @@ def read_split_table(prepared):
                 rows.append(r)
     if not rows:
         raise ValueError("No QC-passing patients with an available slide in splits.tsv")
+    if len({r['patient_id'] for r in rows}) != len(rows):
+        raise ValueError('Duplicate patient across ABMIL samples/splits')
+    if len({r['slide_id'] for r in rows}) != len(rows):
+        raise ValueError('A slide cannot represent multiple patients')
     return rows
 
 
@@ -95,6 +103,7 @@ def train(a):
     if out.exists():
         raise FileExistsError(out)
     rows = read_split_table(a.prepared)
+    patient_by_slide = {r['slide_id']: r['patient_id'] for r in rows}
     bags = {s: [] for s in ("train", "validation", "test")}
     dim = None
     for r in rows:
@@ -144,7 +153,7 @@ def train(a):
                 full, coords, _ = load_bag(a.embeddings, slide_id)
                 logits, weights = model(torch.from_numpy(full).to(device))
                 np.save(out / "attention" / f"{slide_id}.npy", weights.cpu().numpy())
-                scored.append(dict(slide_id=slide_id, split=split, truth=SUBTYPE_CLASSES[label],
+                scored.append(dict(patient_id=patient_by_slide[slide_id], slide_id=slide_id, split=split, truth=SUBTYPE_CLASSES[label],
                                    score_POS=logits.softmax(-1)[1].item(), tiles=len(full)))
     with (out / "slide_scores.tsv").open("w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(scored[0]), delimiter="\t")
@@ -170,8 +179,9 @@ def montage(a):
 
     k = a.grid * a.grid
     out = Path(a.output)
-    out.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=False)
     index = []
+    selection_audit = []
     for att_path in sorted(Path(a.abmil).glob("attention/*.npy")):
         slide_id = att_path.stem
         target = out / f"{slide_id}.png"
@@ -186,7 +196,9 @@ def montage(a):
             slide_path = Path(attrs["slide"])
         slide = openslide.OpenSlide(str(slide_path))
         size, tile = int(attrs["tile_level0"]), int(attrs["tile"])
-        top = select_top_tiles(weights, k)
+        top, diagnostic = select_tiles(weights, coords, k, method=a.selection, tile_size=size,
+            candidate_pool=a.candidate_pool, min_distance_tiles=a.min_distance_tiles)
+        selection_audit.append(dict(slide_id=slide_id, **diagnostic, **spatial_metrics(coords, top, size)))
         canvas = Image.new("RGB", (a.grid * tile, a.grid * tile), "white")
         for j, i in enumerate(top):
             x, y = (int(v) for v in coords[i])
@@ -196,8 +208,9 @@ def montage(a):
         slide.close()
         canvas.save(target)
         print(f"{slide_id}: montage from {len(top)} of {len(weights)} tiles")
+    (out / "selection_audit.json").write_text(json.dumps(dict(arguments=vars(a), slides=selection_audit), indent=2))
     if index:
-        with (out / "montage_index.tsv").open("a", newline="") as f:
+        with (out / "montage_index.tsv").open("w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=list(index[0]), delimiter="\t")
             if f.tell() == 0:
                 w.writeheader()
@@ -227,6 +240,9 @@ def main():
     mo.add_argument("--output", required=True)
     mo.add_argument("--slide-dir", help="Override the slide path recorded in the embeddings")
     mo.add_argument("--grid", type=int, default=4, help="grid x grid tiles; 4 = 16 tiles")
+    mo.add_argument("--selection", choices=("top", "spatial"), default="top")
+    mo.add_argument("--candidate-pool", type=int, default=128)
+    mo.add_argument("--min-distance-tiles", type=float, default=2.0)
     a = p.parse_args()
     train(a) if a.command == "train" else montage(a)
 

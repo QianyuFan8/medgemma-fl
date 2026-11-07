@@ -28,18 +28,18 @@ from typing import Any
 import torch
 import torch.nn as nn
 from data_utils import DEFAULT_MODEL_NAME_OR_PATH
+from adapter_scope import saved_modules, target_modules, trainable_summary
 from torch.nn.modules.module import _IncompatibleKeys
 from transformers import AutoModelForImageTextToText, BitsAndBytesConfig
 
 DEFAULT_LORA_ALPHA = 16
 DEFAULT_LORA_DROPOUT = 0.05
 DEFAULT_LORA_R = 16
-DEFAULT_MODULES_TO_SAVE = ["lm_head", "embed_tokens"]
 DEFAULT_TARGET_MODULES = "all-linear"
 MEDGEMMA_IMAGE_TOKEN_ID = 262144
 
 
-def create_lora_config(lora_rank: int = DEFAULT_LORA_R):
+def create_lora_config(lora_rank: int = DEFAULT_LORA_R, adapter_scope: str = "legacy"):
     from peft import LoraConfig
 
     return LoraConfig(
@@ -48,9 +48,9 @@ def create_lora_config(lora_rank: int = DEFAULT_LORA_R):
         r=lora_rank,
         bias="none",
         ensure_weight_tying=True,
-        target_modules=DEFAULT_TARGET_MODULES,
+        target_modules=target_modules(adapter_scope),
         task_type="CAUSAL_LM",
-        modules_to_save=list(DEFAULT_MODULES_TO_SAVE),
+        modules_to_save=saved_modules(adapter_scope),
     )
 
 
@@ -142,6 +142,7 @@ def create_peft_medgemma_model(
     quantized: bool = False,
     device_map=None,
     lora_rank: int = DEFAULT_LORA_R,
+    adapter_scope: str = "legacy",
     attn_implementation: str | None = None,
 ):
     from peft import get_peft_model, prepare_model_for_kbit_training
@@ -150,7 +151,9 @@ def create_peft_medgemma_model(
                                           attn_implementation=attn_implementation)
     if quantized:
         base_model = prepare_model_for_kbit_training(base_model)
-    return get_peft_model(base_model, create_lora_config(lora_rank=lora_rank))
+    model = get_peft_model(base_model, create_lora_config(lora_rank=lora_rank, adapter_scope=adapter_scope))
+    trainable_summary(model, adapter_scope)  # Fail before training if the requested scope is violated.
+    return model
 
 
 def apply_adapter_state(model, adapter_state: dict[str, Any]) -> None:
@@ -191,14 +194,19 @@ def infer_uniform_lora_rank_from_state_dict(adapter_state: dict[str, Any]) -> in
 class MedGemmaLoRAModel(nn.Module):
     """Server-side initial model that exposes only LoRA adapter weights."""
 
-    def __init__(self, model_name_or_path: str = DEFAULT_MODEL_NAME_OR_PATH, lora_rank: int = DEFAULT_LORA_R):
+    def __init__(self, model_name_or_path: str = DEFAULT_MODEL_NAME_OR_PATH, lora_rank: int = DEFAULT_LORA_R,
+                 adapter_scope: str = "legacy", seed: int | None = None):
         super().__init__()
+        if seed is not None:
+            from transformers import set_seed
+            set_seed(seed)
         self.model_name_or_path = model_name_or_path
         self.lora_rank = lora_rank
         self.model = create_peft_medgemma_model(
             model_name_or_path=model_name_or_path,
             quantized=False,
             lora_rank=lora_rank,
+            adapter_scope=adapter_scope,
         )
 
     def forward(self, *args, **kwargs):

@@ -17,6 +17,13 @@ target_data/processed/*.parquet
 /data/
 /logs/
 /runs/
+/.epoch_diagnostics.lock
+/.epoch_diagnostics_*.latest
+/.zero_language_diagnostics_*.latest
+/.multiimage_diagnostics_*.latest
+/.multimodal_tiles60_*.latest
+/.spatial20_inference.latest
+/.federated_tiles16.latest
 __pycache__/
 *.py[cod]
 /job.py.before-nvflare-fix
@@ -25,3 +32,11 @@ __pycache__/
 .mpl/
 .numba/
 .umap-deps/
+
+# Keep Markdown documentation local; do not publish it to this repository.
+*.[mM][dD]
+*.[mM][dD][xX]
+*.[mM][aA][rR][kK][dD][oO][wW][nN]
+
+# Explicitly keep the local VM setup guide out of Git.
+/methylation/VM_LORA_ONLY_10_RUNS_ZH.md

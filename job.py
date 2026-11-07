@@ -52,8 +52,10 @@ def define_parser():
         "--sim_threads",
         type=int,
         default=None,
-        help="Simulator threads (default: one per client). 1 runs clients one after another to share a single GPU.",
+        help="Simulator control threads; external training processes need --client_gpu_lock to share one GPU.",
     )
+    parser.add_argument("--client_gpu_lock", default=None,
+                        help="Shared absolute GPU lock file for persistent external clients.")
     parser.add_argument("--n_clients", type=int, default=3, help="Number of federated clients (default: 3).")
     parser.add_argument("--num_rounds", type=int, default=3, help="Federated rounds (default: 3).")
     parser.add_argument(
@@ -88,6 +90,14 @@ def define_parser():
         help="Local epochs per client round when --max_steps is not set (default: 1).",
     )
     parser.add_argument("--learning_rate", type=float, default=2e-4, help="Peak learning rate (default: 2e-4).")
+    parser.add_argument("--seed", type=int, default=None, help="Explicit server/client initialization and training seed")
+    parser.add_argument('--save_adapter_epochs', type=int, nargs='+', default=[],
+                        help='Optional local epoch adapter snapshots (inference only).')
+    parser.add_argument('--save_global_rounds', type=int, nargs='+', default=[],
+                        help='Save post-aggregation global adapters after these 1-based rounds.')
+    parser.add_argument('--global_snapshot_dir', help='New output directory for global round adapters.')
+    parser.add_argument("--logging_steps", type=int, default=25)
+    parser.add_argument("--eval_steps", type=int, default=50)
     parser.add_argument(
         "--per_device_train_batch_size",
         type=int,
@@ -142,6 +152,7 @@ def define_parser():
         default="/tmp/nvflare/simulation",
         help="Simulation workspace root (default: /tmp/nvflare/simulation).",
     )
+    parser.add_argument("--adapter_scope", choices=("legacy", "lora-only", "language-only"), default="legacy")
     return parser.parse_args()
 
 
@@ -229,6 +240,7 @@ def _parse_site_lora_ranks(site_lora_ranks: str | None, n_clients: int, global_l
 
 def _build_train_args(args, site_data_path: str, image_root: str, report_to: str, local_lora_rank: int) -> str:
     train_args = [
+        "--adapter_scope", getattr(args, "adapter_scope", "legacy"),
         "--task", args.task,
         "--max_seq_length", str(args.max_seq_length),
         "--data_path",
@@ -240,8 +252,15 @@ def _build_train_args(args, site_data_path: str, image_root: str, report_to: str
         "--lora_rank",
         str(local_lora_rank),
     ]
+    if getattr(args, "client_gpu_lock", None):
+        train_args.extend(["--client_gpu_lock", os.path.abspath(args.client_gpu_lock)])
     if args.attn_implementation:
         train_args.extend(["--attn_implementation", args.attn_implementation])
+    if args.seed is not None:
+        train_args.extend(["--seed", str(args.seed)])
+    if getattr(args, 'save_adapter_epochs', None):
+        train_args.extend(['--save_adapter_epochs'] + [str(e) for e in args.save_adapter_epochs])
+    train_args.extend(["--logging_steps", str(args.logging_steps), "--eval_steps", str(args.eval_steps)])
     if args.fl_method != "fedavg":
         train_args.extend(["--fl_method", args.fl_method, "--fedprox_mu", str(args.fedprox_mu),
                            "--fedlc_tau", str(args.fedlc_tau)])
@@ -277,7 +296,7 @@ def main():
         if args.site_lora_ranks is None:
             args.site_lora_ranks = ",".join([str(args.global_lora_rank)] * n_clients)
         from methylation_validate import validate_clients
-        task_spec = validate_clients(data_dir, n_clients)
+        task_spec = validate_clients(data_dir, n_clients, require_patient_groups=args.task == "subtype")
         if args.task == "subtype":
             # Montage paths in the exported JSON are relative to the export root.
             image_root = os.path.dirname(data_dir)
@@ -308,8 +327,21 @@ def main():
 
     model = {
         "class_path": "model.MedGemmaLoRAModel",
-        "args": {"model_name_or_path": args.model_name_or_path, "lora_rank": args.global_lora_rank},
+        "args": {"model_name_or_path": args.model_name_or_path, "lora_rank": args.global_lora_rank,
+                 "adapter_scope": args.adapter_scope, "seed": args.seed},
     }
+
+    if args.save_global_rounds:
+        if (args.lora_aggregation != 'naive' or not args.global_snapshot_dir or
+                min(args.save_global_rounds) < 1 or max(args.save_global_rounds) > args.num_rounds):
+            raise ValueError('Global snapshots require naive aggregation, a directory, and rounds within the budget')
+        from federated_snapshots import SnapshotNaiveAggregator
+        aggregator = SnapshotNaiveAggregator(args.global_lora_rank, os.path.abspath(args.global_snapshot_dir),
+                                               args.save_global_rounds, n_clients)
+    else:
+        aggregator = (HLoRAMaxRankAggregator(global_lora_rank=args.global_lora_rank)
+                      if args.lora_aggregation == 'hlora' else
+                      NaiveMaxRankAggregator(global_lora_rank=args.global_lora_rank))
 
     recipe = FedAvgRecipe(
         per_site_config=per_site_config,
@@ -318,11 +350,7 @@ def main():
         num_rounds=args.num_rounds,
         model=model,
         train_script="client.py",
-        aggregator=(
-            HLoRAMaxRankAggregator(global_lora_rank=args.global_lora_rank)
-            if args.lora_aggregation == "hlora"
-            else NaiveMaxRankAggregator(global_lora_rank=args.global_lora_rank)
-        ),
+        aggregator=aggregator,
         launch_external_process=True,
         server_expected_format="pytorch",
         key_metric="",

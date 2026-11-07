@@ -27,6 +27,7 @@ import signal
 import sys
 import time
 
+from client_gpu_lock import client_gpu_slot
 from data_utils import DEFAULT_MODEL_NAME_OR_PATH, format_training_example, resolve_image_path
 from datasets import Image, load_dataset
 from methylation_utils import build_methylation_collator, format_methylation_example
@@ -34,7 +35,7 @@ from subtype_utils import build_multimodal_collator, format_subtype_example
 from lora_utils import build_uniform_lora_rank_map, truncate_global_bank_for_site
 from fl_methods import METHODS, FLMethodState, split_scaffold_params
 from model import MEDGEMMA_IMAGE_TOKEN_ID, apply_adapter_state, create_peft_medgemma_model, get_adapter_state_dict
-from transformers import AutoProcessor
+from transformers import AutoProcessor, TrainerCallback
 from trl import SFTConfig, SFTTrainer
 from utils import (
     abs_path,
@@ -49,6 +50,43 @@ from utils import (
 
 import nvflare.client as flare
 from nvflare.apis.fl_constant import FLMetaKey
+
+
+class EpochAdapterCheckpoint(TrainerCallback):
+    """Save inference-only adapter snapshots without changing Trainer scheduling."""
+
+    def __init__(self, epochs):
+        self.epochs = set(epochs)
+        self.saved = set()
+
+    def on_epoch_end(self, args, state, control, model=None, **kwargs):
+        import hashlib
+        import json
+        from pathlib import Path
+        import torch
+
+        epoch = round(state.epoch or 0)
+        if (epoch not in self.epochs or epoch in self.saved or
+                abs((state.epoch or 0) - epoch) > 1e-6 or not state.is_world_process_zero):
+            return control
+        root = Path(args.output_dir) / 'epoch_checkpoints'
+        root.mkdir(parents=True, exist_ok=True)
+        target = root / f'epoch-{epoch:02d}.pt'
+        if target.exists():
+            raise FileExistsError(target)
+        temporary = target.with_suffix('.pt.tmp')
+        # Use the same tensor naming/envelope as the existing inference loader.
+        weights = {'model.' + k: v for k, v in get_adapter_state_dict(model).items()}
+        torch.save({'model': weights}, temporary)
+        temporary.replace(target)
+        metadata = {'epoch': epoch, 'global_step': state.global_step,
+                    'planned_epochs': args.num_train_epochs,
+                    'checkpoint_sha256': hashlib.sha256(target.read_bytes()).hexdigest(),
+                    'purpose': 'inference_only_adapter_snapshot_not_optimizer_resume'}
+        target.with_suffix('.json').write_text(json.dumps(metadata, indent=2) + '\n')
+        self.saved.add(epoch)
+        print(f'SAVED_EPOCH_ADAPTER epoch={epoch} step={state.global_step} path={target}', flush=True)
+        return control
 
 
 def _load_site_split(json_path: str, image_root: str, task: str = "histology"):
@@ -118,6 +156,9 @@ def _build_training_args(args, output_dir: str, do_eval: bool) -> SFTConfig:
     )
     if args.max_steps is not None:
         training_args["max_steps"] = args.max_steps
+    if getattr(args, "seed", None) is not None:
+        training_args["seed"] = args.seed
+        training_args["data_seed"] = args.seed
     if args.task in ("methylation", "subtype"):
         # Keep warmup_steps above: the VM's Transformers/TRL accepts a
         # fractional value here and no longer accepts warmup_ratio.
@@ -133,6 +174,9 @@ def _build_training_args(args, output_dir: str, do_eval: bool) -> SFTConfig:
 def main():
     parser = argparse.ArgumentParser(description="Federated MedGemma client with QLoRA-based local training.")
     parser.add_argument("--task", choices=("histology", "methylation", "subtype"), default="histology")
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--client_gpu_lock", default=None,
+                        help="Shared absolute lock path for external clients using one GPU.")
     parser.add_argument("--max_seq_length", type=int, default=4096)
     parser.add_argument("--attn_implementation", choices=("eager", "sdpa", "flash_attention_2"), default=None,
                         help="Attention kernel; default eager (notebook). Use sdpa for long CpG prompts.")
@@ -209,7 +253,16 @@ def main():
         default=16,
         help="Local site LoRA rank. Incoming global banks are truncated to this rank before loading.",
     )
+    parser.add_argument("--adapter_scope", choices=("legacy", "lora-only", "language-only"), default="legacy")
+    parser.add_argument('--save_adapter_epochs', type=int, nargs='+', default=[],
+                        help='Save adapter-only inference snapshots at selected local epoch ends.')
     args = parser.parse_args()
+    if args.save_adapter_epochs and (args.max_steps is not None or
+            any(e < 1 or e > args.num_train_epochs for e in args.save_adapter_epochs)):
+        parser.error('Snapshot epochs must be within num_train_epochs; max_steps is unsupported.')
+    if args.seed is not None:
+        from transformers import set_seed
+        set_seed(args.seed)
 
     signal.signal(signal.SIGTERM, lambda _signum, _frame: sys.exit(0))
 
@@ -249,15 +302,21 @@ def main():
         f"site={client_name}, train_samples={len(train_dataset)}, validation_samples={len(eval_dataset or [])}, "
         f"local_lora_rank={args.lora_rank}"
     )
-    model = create_peft_medgemma_model(
-        model_name_or_path=args.model_name_or_path,
-        quantized=True,
-        device_map={"": 0},
-        lora_rank=args.lora_rank,
-        attn_implementation=args.attn_implementation,
-    )
-    print(f"site={client_name}")
-    model.print_trainable_parameters()
+    with client_gpu_slot(args.client_gpu_lock, client_name, "initialize"):
+        model = create_peft_medgemma_model(
+            model_name_or_path=args.model_name_or_path,
+            quantized=True,
+            device_map={"": 0},
+            lora_rank=args.lora_rank,
+            adapter_scope=args.adapter_scope,
+            attn_implementation=args.attn_implementation,
+        )
+        print(f"site={client_name}")
+        model.print_trainable_parameters()
+        from adapter_scope import trainable_summary
+        parameter_audit = trainable_summary(model, args.adapter_scope)
+        print(f"adapter_scope={args.adapter_scope}, trainable_parameters={parameter_audit['trainable_parameters']}")
+        free_memory()
     fl_state = FLMethodState(args.fl_method, mu=args.fedprox_mu, tau=args.fedlc_tau,
                              classes=train_dataset[0].get("classes"))
     print(f"site={client_name}, fl_method={args.fl_method}, fedprox_mu={args.fedprox_mu}, fedlc_tau={args.fedlc_tau}")
@@ -267,6 +326,9 @@ def main():
     else:
         work_dir = abs_path(args.work_dir)
     os.makedirs(work_dir, exist_ok=True)
+    import json
+    with open(os.path.join(work_dir, "trainable_parameters.json"), "w") as f:
+        json.dump(parameter_audit, f, indent=2)
 
     while flare.is_running():
         input_model = flare.receive()
@@ -283,66 +345,83 @@ def main():
                 raise ValueError("SCAFFOLD requires every site rank to equal the global LoRA rank (no bank truncation)")
         site_rank_map = build_uniform_lora_rank_map(adapter_params.keys(), args.lora_rank)
         local_adapter_state = truncate_global_bank_for_site(adapter_params, site_rank_map)
-        apply_adapter_state(model, local_adapter_state)
-        model.train()
-        fl_state.start_round(model, server_control, train_labels=list(train_dataset["label_name"]),
-                             tokenizer=processor.tokenizer)
+        with client_gpu_slot(args.client_gpu_lock, client_name, f"round-{current_round}"):
+            apply_adapter_state(model, local_adapter_state)
+            model.train()
+            fl_state.start_round(model, server_control, train_labels=list(train_dataset["label_name"]),
+                                 tokenizer=processor.tokenizer)
 
-        if eval_dataset is not None and args.eval_subset_size > 0 and len(eval_dataset) > args.eval_subset_size:
-            round_eval_dataset = eval_dataset.shuffle(seed=42 + current_round).select(range(args.eval_subset_size))
-        else:
-            round_eval_dataset = eval_dataset
+            if eval_dataset is not None and args.eval_subset_size > 0 and len(eval_dataset) > args.eval_subset_size:
+                round_eval_dataset = eval_dataset.shuffle(seed=42 + current_round).select(range(args.eval_subset_size))
+            else:
+                round_eval_dataset = eval_dataset
 
-        round_output_dir = os.path.join(work_dir, f"round-{current_round}")
-        if os.path.isdir(round_output_dir):
-            shutil.rmtree(round_output_dir)
+            round_output_dir = os.path.join(work_dir, f"round-{current_round}")
+            if os.path.isdir(round_output_dir):
+                shutil.rmtree(round_output_dir)
 
-        sync_cuda()
-        round_start_time = time.perf_counter()
-        reset_peak_cuda_memory_stats()
-        round_start_allocated_mb, round_start_reserved_mb = get_cuda_memory_usage_mb()
-
-        trainer = fl_state.make_trainer(
-            SFTTrainer,
-            model=model,
-            args=_build_training_args(args, round_output_dir, round_eval_dataset is not None),
-            train_dataset=train_dataset,
-            eval_dataset=round_eval_dataset,
-            processing_class=processor,
-            data_collator=collate_fn,
-        )
-
-        sync_cuda()
-        train_start_time = time.perf_counter()
-        train_result = trainer.train()
-        sync_cuda()
-        train_runtime_sec = time.perf_counter() - train_start_time
-        train_loss = float(getattr(train_result, "training_loss", float("nan")))
-        metrics = {"loss": train_loss}
-        eval_runtime_sec = 0.0
-        if round_eval_dataset is not None:
             sync_cuda()
-            eval_start_time = time.perf_counter()
-            eval_metrics = trainer.evaluate()
-            sync_cuda()
-            eval_runtime_sec = time.perf_counter() - eval_start_time
-            eval_loss = float(eval_metrics["eval_loss"])
-            metrics["eval_loss"] = eval_loss
-            metrics["neg_eval_loss"] = -eval_loss
+            round_start_time = time.perf_counter()
+            reset_peak_cuda_memory_stats()
+            round_start_allocated_mb, round_start_reserved_mb = get_cuda_memory_usage_mb()
 
-        params = {"model." + key: value for key, value in get_adapter_state_dict(model).items()}
-        params.update(fl_state.end_round(model))  # SCAFFOLD control variate, empty otherwise
-        sent_mb = params_size_mb(params)
-        sync_cuda()
-        round_runtime_sec = time.perf_counter() - round_start_time
-        peak_allocated_mb, peak_reserved_mb = get_peak_cuda_memory_usage_mb()
-        peak_allocated_delta_mb = max(0.0, peak_allocated_mb - round_start_allocated_mb)
-        peak_reserved_delta_mb = max(0.0, peak_reserved_mb - round_start_reserved_mb)
-        meta = {"num_examples": len(train_dataset)}
-        if args.max_steps is not None:
-            meta[FLMetaKey.NUM_STEPS_CURRENT_ROUND] = args.max_steps
-        else:
-            meta["NUM_TRAIN_EPOCHS_CURRENT_ROUND"] = args.num_train_epochs
+            trainer = fl_state.make_trainer(
+                SFTTrainer,
+                model=model,
+                args=_build_training_args(args, round_output_dir, round_eval_dataset is not None),
+                train_dataset=train_dataset,
+                eval_dataset=round_eval_dataset,
+                processing_class=processor,
+                data_collator=collate_fn,
+            )
+            epoch_callback = EpochAdapterCheckpoint(args.save_adapter_epochs)
+            if args.save_adapter_epochs:
+                trainer.add_callback(epoch_callback)
+
+            sync_cuda()
+            train_start_time = time.perf_counter()
+            train_result = trainer.train()
+            if epoch_callback.saved != set(args.save_adapter_epochs):
+                raise RuntimeError('Training did not save every requested epoch checkpoint')
+            sync_cuda()
+            train_runtime_sec = time.perf_counter() - train_start_time
+            train_loss = float(getattr(train_result, "training_loss", float("nan")))
+            os.makedirs(round_output_dir, exist_ok=True)
+            with open(os.path.join(round_output_dir, "training_diagnostics.json"), "w") as f:
+                json.dump({"seed": args.seed, "learning_rate": args.learning_rate,
+                           "num_train_epochs": args.num_train_epochs, "max_steps": args.max_steps,
+                           "global_step": trainer.state.global_step, "epoch": trainer.state.epoch, "training_loss": train_loss,
+                           "train_records": len(train_dataset), "log_history": trainer.state.log_history}, f, indent=2)
+            metrics = {"loss": train_loss}
+            eval_runtime_sec = 0.0
+            if round_eval_dataset is not None:
+                sync_cuda()
+                eval_start_time = time.perf_counter()
+                eval_metrics = trainer.evaluate()
+                sync_cuda()
+                eval_runtime_sec = time.perf_counter() - eval_start_time
+                eval_loss = float(eval_metrics["eval_loss"])
+                metrics["eval_loss"] = eval_loss
+                metrics["neg_eval_loss"] = -eval_loss
+
+            params = {"model." + key: value for key, value in get_adapter_state_dict(model).items()}
+            params.update(fl_state.end_round(model))  # SCAFFOLD control variate, empty otherwise
+            sent_mb = params_size_mb(params)
+            sync_cuda()
+            round_runtime_sec = time.perf_counter() - round_start_time
+            peak_allocated_mb, peak_reserved_mb = get_peak_cuda_memory_usage_mb()
+            peak_allocated_delta_mb = max(0.0, peak_allocated_mb - round_start_allocated_mb)
+            peak_reserved_delta_mb = max(0.0, peak_reserved_mb - round_start_reserved_mb)
+            meta = {"num_examples": len(train_dataset)}
+            if args.max_steps is not None:
+                meta[FLMetaKey.NUM_STEPS_CURRENT_ROUND] = args.max_steps
+            else:
+                meta["NUM_TRAIN_EPOCHS_CURRENT_ROUND"] = args.num_train_epochs
+            # Exported adapters are CPU tensors. Release optimizer, gradients and
+            # cached activations BEFORE another client acquires the GPU slot.
+            model.zero_grad(set_to_none=True)
+            del trainer
+            free_memory()
         flare.send(flare.FLModel(params_type=flare.ParamsType.FULL, params=params, metrics=metrics, meta=meta))
         print(
             f"site={client_name}, round={current_round}, local_lora_rank={args.lora_rank}, "
@@ -357,7 +436,7 @@ def main():
         )
         print(f"site={client_name}, round={current_round}, sent updated adapter size: {sent_mb:.2f} MB")
 
-        del trainer, params, input_model, local_adapter_state
+        del params, input_model, local_adapter_state
         free_memory()
 
 

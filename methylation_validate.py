@@ -7,11 +7,16 @@ from pathlib import Path
 from methylation_utils import panel_fingerprint
 
 
-def validate_clients(data_dir, n_clients):
+def validate_clients(data_dir, n_clients, require_patient_groups=False):
     root = Path(data_dir)
     task = json.loads((root.parent / "task.json").read_text())
+    if task.get('task') == 'comet_subtype' or (task.get('task') == 'comet_fusion' and task.get('classes') != ['NEG', 'POS']):
+        raise ValueError('This branch requires fusion NEG/POS exports; rebuild old subtype datasets')
     if task["n_clients"] != n_clients:
         raise ValueError("Client count differs from prepared dataset")
+    if require_patient_groups and task.get('task') == 'comet_fusion':
+        from scripts.check_fusion_splits import inspect, inspect_clients
+        inspect_clients(root.parent, inspect(root.parent))
     if task.get('panel_mode') == 'shared':
         if task['panel_id'] != panel_fingerprint(task['probes']):
             raise ValueError('Panel fingerprint differs from ordered probes')
@@ -50,6 +55,11 @@ def validate_clients(data_dir, n_clients):
                 raise ValueError('Image presence does not match task modality')
             if has_image and not (root.parent / r['image']).is_file():
                 raise ValueError(f"Missing montage image: {r['image']}")
+            layout = r.get('image_layout', 'montage')
+            if layout not in ('montage', 'tiles16') or layout != task.get('image_layout', 'montage'):
+                raise ValueError('Record image layout differs from task layout')
+            if layout == 'tiles16' and modality not in ('image', 'multimodal'):
+                raise ValueError('Separate-tile diagnostics require an image-bearing modality')
     for r in heldout:
         check_record(r)
     seen = {r["patient_id"] for r in heldout}

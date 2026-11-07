@@ -21,7 +21,7 @@ import subprocess
 from methylation_utils import panel_fingerprint
 from methylation_validate import validate_clients
 from subtype_utils import (MODALITIES, PROMPT_STYLE, SUBTYPE_CLASSES, make_subtype_record,
-                           read_fusion_status, read_mapping)
+                           read_fusion_status, read_mapping, normalize_slide_id)
 
 MISSING = {"", "NA", "N/A", "NAN", "NONE"}
 QC_MODES = {"lenient": 0.05, "strict": 0.0}
@@ -80,11 +80,21 @@ def audit(a):
     if out.exists():
         raise FileExistsError(out)
     mapping = read_mapping(a.mapping)
-    meta = {r["Sample_Name"].strip(): r for r in read_tsv(a.comet_metadata)}
+    meta = {}
+    for row in read_tsv(a.comet_metadata):
+        key = (row.get("Sentrix_ID") or row.get("Sample_Name", "")).strip()
+        if not key or key in meta:
+            raise ValueError("Missing or duplicate metadata Sentrix ID")
+        meta[key] = row
     header = matrix_header(a.comet_matrix)
     beta_cols = {c[:-9] if c.endswith(".Ave_Beta") else c: c for c in header[1:] if not c.endswith(".Detection.Pval")}
     slides = list_slides(a.slide_dir, a.slide_list)
     slide_users = Counter(r["slide_id"] for r in mapping if r["slide_id"])
+    slide_owners = defaultdict(set)
+    for r in mapping:
+        if r["slide_id"]:
+            uid = meta.get(r["sentrix_id"], {}).get("UID.Subject", "").strip()
+            slide_owners[r["slide_id"]].add(uid or "UNRESOLVED:" + r["sample_id"])
     fusion_path = str(Path(a.fusion).resolve())
     fusion = read_fusion_status(a.fusion)
     matrix_path = str(Path(a.comet_matrix).resolve())
@@ -93,6 +103,11 @@ def audit(a):
         sentrix, subtype = r["sentrix_id"], r["subtype"].upper()
         call = fusion.get(r["sample_id"], "")
         m = meta.get(sentrix)
+        uid = m.get("UID.Subject", "").strip() if m else ""
+        meta_sjid = m.get("SJID", "").strip() if m else ""
+        meta_slide = normalize_slide_id(m.get("Slide.Scan.File")) if m else ""
+        identity_conflict = bool(meta_sjid and meta_sjid != r["compbio_id"])
+        slide_conflict = bool(meta_slide and r["slide_id"] and meta_slide != r["slide_id"])
         col = beta_cols.get(sentrix)
         if call not in SUBTYPE_CLASSES:
             status = "fusion_not_called"
@@ -104,20 +119,26 @@ def audit(a):
             status = "non_patient_tumor"
         elif any(m[k].strip().upper() != "PASS" for k in ("Final.QC", "Pass.QC")):
             status = "metadata_qc_failed"
-        elif not r["patient_id"]:
+        elif not uid:
             status = "unresolved_patient_identifier"
+        elif identity_conflict:
+            status = "sample_identity_conflict"
         else:
             status = "candidate_pending_label_review"
         slide_id = r["slide_id"]
         if not slide_id:
             slide_status = "no_slide_id"
-        elif slide_users[slide_id] > 1:
+        elif slide_conflict:
+            slide_status = "slide_mapping_conflict"
+        elif len(slide_owners[slide_id]) > 1:
             slide_status = "slide_shared_by_multiple_samples"
         elif slide_id in slides:
             slide_status = "available"
         else:
             slide_status = "not_available_locally"
-        records.append(dict(sample_id="COMET:" + sentrix, patient_id="COMET:" + r["patient_id"] if r["patient_id"] else "",
+        records.append(dict(sample_id="COMET:" + sentrix, patient_id="COMET:" + uid if uid else "",
+                            patient_id_source="RMSs_meta UID.Subject", metadata_sjid=meta_sjid,
+                            identity_conflict=identity_conflict, slide_mapping_conflict=slide_conflict,
                             comet_sample_id=r["sample_id"], compbio_id=r["compbio_id"], histologic_subtype=subtype or "NA",
                             diagnosis=call or "NA",
                             source="COMET", source_group="COMET_RMS", platform="COMET_methylation",
@@ -126,7 +147,7 @@ def audit(a):
                             detection_column=(col[:-9] + ".Detection.Pval") if col and col.endswith(".Ave_Beta") and (col[:-9] + ".Detection.Pval") in header else "",
                             slide_id=slide_id, slide_status=slide_status,
                             slide_file=slides.get(slide_id, "") if slide_status == "available" else "",
-                            label_source=str(Path(a.mapping).resolve())))
+                            label_source=fusion_path))
     by_patient = defaultdict(list)
     for rec in records:
         if rec["status"] == "candidate_pending_label_review":
@@ -145,6 +166,7 @@ def audit(a):
     candidates = [x for x in records if x["status"] == "candidate_pending_label_review"]
     report = {
         "stage": "audit_only_review_before_preparing", "classes": SUBTYPE_CLASSES,
+        "patient_id_source": "RMSs_meta UID.Subject",
         "mapping_rows": len(mapping), "mapping_subtypes": dict(Counter(r["subtype"] for r in mapping)),
         "sample_status": dict(Counter(x["status"] for x in records)),
         "candidate_patients_by_label": dict(Counter(x["diagnosis"] for x in candidates)),
@@ -155,7 +177,7 @@ def audit(a):
         "independently_clinically_verified": False,
         "label_basis": "Final Fusion Status POS/NEG from COMET_RMS_fusion_status.xlsx; samples without a call are excluded",
         "source_files": [{"path": p, "bytes": Path(p).stat().st_size, "mtime_ns": Path(p).stat().st_mtime_ns}
-                         for p in [matrix_path, fusion_path]],
+                         for p in [matrix_path, fusion_path, str(Path(a.mapping).resolve()), str(Path(a.comet_metadata).resolve())]],
         "samples_audit_sha256": sha256_file(out / "samples_audit.tsv"),
     }
     dump(out / "audit.json", report)
@@ -168,6 +190,8 @@ def prepare(a):
     if out.exists():
         raise FileExistsError(out)
     report = json.loads((audit_dir / "audit.json").read_text())
+    if report.get("classes") != SUBTYPE_CLASSES or report.get("patient_id_source") != "RMSs_meta UID.Subject":
+        raise ValueError("Regenerate the fusion audit using UID.Subject; old subtype/prefix-ID audits cannot be reused")
     if sha256_file(audit_dir / "samples_audit.tsv") != report["samples_audit_sha256"]:
         raise ValueError("Audit changed; regenerate it")
     for source in report["source_files"]:
@@ -195,6 +219,8 @@ def prepare(a):
                diagnoses=SUBTYPE_CLASSES, selection_mode="shared_fraction", source_groups=["COMET_RMS"],
                top_fraction=a.top_fraction, seed=a.seed, max_sample_missing=a.max_sample_missing,
                max_probe_missing=QC_MODES[a.qc_mode], qc_mode=a.qc_mode, detection_p=0.01, covariates=[])
+    if getattr(a, "split_file", None):
+        cfg["split_file"] = str(Path(a.split_file).resolve())
     if a.exclude_probes:
         cfg["exclude_probes"] = str(Path(a.exclude_probes).resolve())
     dump(config, cfg)
@@ -236,23 +262,41 @@ def allocate(n, weights):
 
 
 def assign_sites(rows, sites, partition, rng, dominant_fraction):
-    """Return {patient_id: site}. iid = stratified round robin; skew = per-site dominant class."""
+    """Allocate canonical patients, then expand to record IDs without splitting a patient."""
+    from fusion_identity import canonical_uid
+
+    if not sites or len(set(sites)) != len(sites) or partition not in ("iid", "skew"):
+        raise ValueError("Invalid sites or partition")
+    if not 0 < dominant_fraction < 1:
+        raise ValueError("dominant_fraction must be between zero and one")
+    patients, seen = {}, set()
+    for row in rows:
+        uid = canonical_uid(row)
+        if row["patient_id"] in seen:
+            raise ValueError("Duplicate record ID")
+        seen.add(row["patient_id"])
+        group = patients.setdefault(uid, [])
+        if row["diagnosis"] not in SUBTYPE_CLASSES or (group and group[0]["diagnosis"] != row["diagnosis"]):
+            raise ValueError("Invalid or conflicting fusion labels for a canonical patient")
+        group.append(row)
     assignment = {}
-    for k, dx in enumerate(SUBTYPE_CLASSES):
-        group = [r for r in rows if r["diagnosis"] == dx]
+    for dx in SUBTYPE_CLASSES:
+        group = sorted(uid for uid, records in patients.items() if records[0]["diagnosis"] == dx)
         rng.shuffle(group)
         if partition == "iid":
             offset = rng.randrange(len(sites))
-            for j, r in enumerate(group):
-                assignment[r["patient_id"]] = sites[(offset + j) % len(sites)]
+            for j, uid in enumerate(group):
+                for r in patients[uid]:
+                    assignment[r["patient_id"]] = sites[(offset + j) % len(sites)]
         else:
             weights = [dominant_fraction if SUBTYPE_CLASSES[i % len(SUBTYPE_CLASSES)] == dx else 1 - dominant_fraction
                        for i in range(len(sites))]
             counts = allocate(len(group), weights)
             cursor = 0
             for site, c in zip(sites, counts):
-                for r in group[cursor:cursor + c]:
-                    assignment[r["patient_id"]] = site
+                for uid in group[cursor:cursor + c]:
+                    for r in patients[uid]:
+                        assignment[r["patient_id"]] = site
                 cursor += c
     return assignment
 
@@ -266,18 +310,33 @@ def export(a):
     if a.n_clients < 1:
         raise ValueError("--n-clients must be >= 1 (1 = centralized training)")
     spec = json.loads((root / "features.json").read_text())
+    if spec.get("classes") != SUBTYPE_CLASSES:
+        raise ValueError("Expected a newly selected NEG/POS panel; an ERMS/ARMS panel cannot be relabeled")
     probes = spec["probes"]
     if spec["panel_id"] != panel_fingerprint(probes) or spec["features_sha256"] != sha256_file(root / "features.tsv"):
         raise ValueError("Frozen feature artifact was modified")
     use_meth = a.modality in ("methylation", "multimodal")
     use_image = a.modality in ("image", "multimodal")
-    splits = {r["patient_id"]: r for r in read_tsv(root / "splits.tsv") if r["qc_pass"].upper() == "TRUE"}
+    split_rows = [r for r in read_tsv(root / "splits.tsv") if r["qc_pass"].upper() == "TRUE"]
+    from fusion_identity import canonical_uid, validate_patient_rows
+    validate_patient_rows(split_rows)
+    for r in split_rows:
+        r["canonical_uid"] = canonical_uid(r)
+    splits = {r["patient_id"]: r for r in split_rows}
     sites = [f"site-{i}" for i in range(1, a.n_clients + 1)]
     rng = random.Random(a.seed)
     montage_dir = Path(a.montage_dir) if a.montage_dir else None
     if use_image and montage_dir is None:
         raise ValueError("--montage-dir is required for image/multimodal exports")
+    image_selection = "top"
+    if use_image and (montage_dir / "selection_audit.json").exists():
+        selection_audit = json.loads((montage_dir / "selection_audit.json").read_text())
+        image_selection = selection_audit["arguments"]["selection"]
+        if image_selection not in ("top", "spatial"):
+            raise ValueError("Unknown montage selection policy")
     records, assignments, dropped = {}, [], Counter()
+    csv_rows = {}
+    seen = set()
     counts = defaultdict(lambda: defaultdict(Counter))
     out.mkdir(parents=True)
     (out / "images").mkdir()
@@ -289,7 +348,12 @@ def export(a):
             rows = list(reader)
         kept = []
         for row in rows:
+            if row['patient_id'] in seen:
+                raise ValueError("Patient repeated within or across split CSVs")
+            seen.add(row['patient_id'])
             meta = splits[row["patient_id"]]
+            if meta['split'] != split or meta['diagnosis'] != row['diagnosis']:
+                raise ValueError("CSV labels/splits disagree with splits.tsv")
             image = None
             if use_image:
                 if meta["slide_status"] != "available":
@@ -297,24 +361,30 @@ def export(a):
                     continue
                 source = montage_dir / f"{meta['slide_id']}.png"
                 if not source.is_file():
-                    dropped[f"{split}:montage_missing"] += 1
-                    continue
+                    raise ValueError(f"Missing montage: {source}. Generate all selected images before export")
                 image = f"images/{row['patient_id'].replace(':', '_')}.png"
                 shutil.copy2(source, out / image)
             kept.append((row, image))
         if {r["diagnosis"] for r, _ in kept} != set(SUBTYPE_CLASSES):
             raise ValueError(f"Split {split} lost a class after modality filtering")
+        csv_rows[split] = [r for r, _ in kept]
         # Test patients also receive a site label (for per-site reporting) but never enter client folders.
-        site_of = assign_sites([r for r, _ in kept], sites, a.partition, rng, a.dominant_fraction)
+        site_of = assign_sites([splits[r["patient_id"]] for r, _ in kept], sites, a.partition, rng, a.dominant_fraction)
         buckets = {s: [] for s in sites}
         for row, image in kept:
             site = site_of[row["patient_id"]]
             record = make_subtype_record(row["patient_id"], row["diagnosis"], probes,
                                          [float(row[p]) for p in probes] if use_meth else [],
                                          SUBTYPE_CLASSES, a.modality, image=image, site_id=site)
+            record["canonical_uid"] = splits[row["patient_id"]]["canonical_uid"]
+            if use_image and image_selection == "spatial":
+                record["prompt"] = record["prompt"].replace("16 highest-attention tiles",
+                    "16 high-attention tiles selected with a spatial-separation rule")
+                record["image_selection"] = image_selection
             buckets[site].append(record)
             counts[site][split][row["diagnosis"]] += 1
-            assignments.append(dict(patient_id=row["patient_id"], diagnosis=row["diagnosis"], split=split,
+            assignments.append(dict(patient_id=row["patient_id"], canonical_uid=record["canonical_uid"],
+                                    diagnosis=row["diagnosis"], split=split,
                                     site_id=site, image=image or ""))
             records.setdefault(split, []).append(record)
         if split != "test":
@@ -326,6 +396,12 @@ def export(a):
                  "preprocessing.rds", "train.csv", "validation.csv", "test.csv", "splits.tsv", "config.json",
                  "cohort_provenance.json", "R_sessionInfo.txt"):
         shutil.copy2(root / file, out / file)
+    # Baselines and MedGemma must see exactly the same retained patients.
+    for split, rows in csv_rows.items():
+        with (out / f"{split}.csv").open('w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=['patient_id', 'diagnosis'] + probes)
+            writer.writeheader(); writer.writerows(rows)
+    write_tsv(out / 'splits.tsv', [splits[r['patient_id']] for rows in csv_rows.values() for r in rows])
     for s in sites:
         dest = out / "clients" / s
         dest.mkdir(parents=True)
@@ -340,11 +416,16 @@ def export(a):
     dump(out / "test.json", records["test"])
     write_tsv(out / "site_assignments.tsv", assignments)
     dump(out / "site_counts.json", counts)
+    patient_counts = {site: {split: {label: len({r["canonical_uid"] for r in assignments
+                      if r["site_id"] == site and r["split"] == split and r["diagnosis"] == label})
+                      for label in SUBTYPE_CLASSES} for split in ("train", "validation", "test")} for site in sites}
+    dump(out / "site_patient_counts.json", patient_counts)
     panel_probes = probes if use_meth else []
     dump(out / "task.json", dict(task="comet_fusion", classes=SUBTYPE_CLASSES, modality=a.modality,
                                  probes=panel_probes, panel_id=panel_fingerprint(panel_probes),
                                  features_sha256=spec["features_sha256"], panel_mode="shared" if use_meth else "image",
                                  n_clients=a.n_clients, sites=sites, partition=a.partition,
+                                 client_assignment_unit="canonical_uid", client_assignment_version=2,
                                  dominant_fraction=a.dominant_fraction if a.partition == "skew" else None,
                                  seed=a.seed, prompt_style=PROMPT_STYLE, qc_mode=spec.get("qc_mode"),
                                  selection="centralized_train_only_limma_shared_fraction", selection_summary=spec["selection"],
@@ -374,6 +455,7 @@ def main():
     pr.add_argument("--qc-mode", choices=sorted(QC_MODES), default="lenient")
     pr.add_argument("--top-fraction", type=float, default=0.001)
     pr.add_argument("--require-slide", action="store_true", help="Restrict the cohort to patients with an available slide")
+    pr.add_argument("--split-file", help="Reviewed patient_id/diagnosis/split TSV; rerun preparation per CV fold")
     pr.add_argument("--exclude-probes")
     pr.add_argument("--max-sample-missing", type=float, default=0.2)
     pr.add_argument("--seed", type=int, default=20261011)

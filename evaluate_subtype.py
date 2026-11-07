@@ -5,7 +5,8 @@ MedGemma levels share this entry point:
   Baseline 2 (centralized)    --model-path <FL_global_model.pt from a 1-client job>
   Federated                   --model-path <FL_global_model.pt from a 3-client job>
 Class probabilities come from teacher-forced log-likelihoods of each option, so
-ROC-AUC / PR-AUC are available for every level; the generated text gives the hard label.
+ROC-AUC / PR-AUC are available for every level. --prediction-source option_scores
+uses the higher-scoring candidate as the hard label, independently of generation.
 """
 from __future__ import annotations
 
@@ -16,9 +17,10 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import math
 
 from methylation_validate import validate_clients
-from subtype_utils import SUBTYPE_CLASSES, format_subtype_example, subtype_metrics
+from subtype_utils import SUBTYPE_CLASSES, format_subtype_example, subtype_metrics, load_example_images
 
 SYNONYMS = {"NEG": ("neg", "negative"), "POS": ("pos", "positive")}
 
@@ -52,6 +54,34 @@ def evaluate_rows(rows, reference, classes, positive):
                            [positive_score(r, positive, classes) for r in rows], classes, positive)
 
 
+def evaluation_reference(root, split, task):
+    root = Path(root)
+    if split == 'train':
+        return [r for site in task['sites']
+                for r in json.loads((root / 'clients' / site / 'train.json').read_text())]
+    return json.loads((root / f'{split}.json').read_text())
+
+
+def patient_score_metrics(rows, root):
+    from fusion_identity import validate_patient_rows
+    with (Path(root) / 'splits.tsv').open(newline='') as f:
+        signature = validate_patient_rows(list(csv.DictReader(f, delimiter='\t')))
+    grouped = {}
+    for row in rows:
+        uid, _, label = signature[row['patient_id']]
+        if row['truth'] != label:
+            raise ValueError('Prediction truth disagrees with canonical manifest')
+        score = positive_score(row, 'POS', ['NEG', 'POS'])
+        if not math.isfinite(score) or not 0 <= score <= 1:
+            raise ValueError('Invalid POS probability')
+        grouped.setdefault(uid, {'label': label, 'scores': []})['scores'].append(score)
+    truth = [r['label'] for _, r in sorted(grouped.items())]
+    scores = [math.fsum(r['scores']) / len(r['scores']) for _, r in sorted(grouped.items())]
+    result = subtype_metrics(truth, ['POS' if s >= 0.5 else 'NEG' for s in scores], scores, ['NEG', 'POS'])
+    return {'unit': 'canonical_patient', 'n_patients': len(grouped), 'n_records': len(rows),
+            'aggregation': 'mean_score_POS', 'threshold': 0.5, **result}
+
+
 def lenient_parse(raw, classes):
     """Earliest whole-word mention of POS/NEG or positive/negative; else <unparsed>."""
     best = None
@@ -71,22 +101,33 @@ def encode(processor, text, images, device):
     return batch.to(device)
 
 
-def predict_one(model, processor, row, data_dir, classes, max_seq_length, parse):
+def option_prediction(classes, probabilities):
+    if (len(classes) != len(probabilities) or not classes or
+            any(not math.isfinite(p) or not 0 <= p <= 1 for p in probabilities)):
+        raise ValueError('Invalid candidate probabilities')
+    # POS is last; ties agree with the patient-level score_POS >= 0.5 rule.
+    return classes[max(range(len(classes)), key=lambda i: (probabilities[i], i))]
+
+
+def predict_one(model, processor, row, data_dir, classes, max_seq_length, parse,
+                prediction_source='generated', skip_generation=False):
     import torch
-    from PIL import Image
     from inference_utils import get_model_device
 
     device = get_model_device(model)
     messages = format_subtype_example(row)["messages"][:1]  # NEVER include the assistant truth
     prompt = processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
-    images = [[Image.open(Path(data_dir) / row["image"]).convert("RGB")]] if row.get("image") else None
+    image_list = load_example_images(row, data_dir)
+    images = [image_list] if image_list else None
     inputs = encode(processor, prompt, images, device)
     n = inputs["input_ids"].shape[1]
     if n + 32 > max_seq_length:
         raise ValueError("Prompt too long; no silent truncation is allowed")
     with torch.inference_mode():
-        generated = model.generate(**inputs, max_new_tokens=32, do_sample=False)
-        raw = processor.tokenizer.decode(generated[0, n:], skip_special_tokens=True).strip()
+        raw = ''
+        if not skip_generation:
+            generated = model.generate(**inputs, max_new_tokens=32, do_sample=False)
+            raw = processor.tokenizer.decode(generated[0, n:], skip_special_tokens=True).strip()
         logps = []
         for cls in classes:
             full = encode(processor, prompt + cls, images, device)
@@ -96,9 +137,11 @@ def predict_one(model, processor, row, data_dir, classes, max_seq_length, parse)
             logits = model(**full).logits[0, n - 1:-1].float()
             logps.append(torch.log_softmax(logits, -1).gather(1, ids[0, n:].unsqueeze(1)).sum())
         probs = torch.stack(logps).softmax(0).tolist()
-    prediction = raw if raw in classes else (lenient_parse(raw, classes) if parse == "lenient" else "<unparsed>")
+    prediction = (option_prediction(classes, probs) if prediction_source == 'option_scores' else
+                  raw if raw in classes else (lenient_parse(raw, classes) if parse == "lenient" else "<unparsed>"))
     out = {"patient_id": row["patient_id"], "truth": row["label_name"], "prediction": prediction, "raw_response": raw}
     out.update({f"score_{c}": p for c, p in zip(classes, probs)})
+    out.update({f"logp_{c}": float(lp) for c, lp in zip(classes, logps)})
     return out
 
 
@@ -107,7 +150,7 @@ def main():
     p.add_argument("mode", choices=("ridge", "medgemma", "compare"))
     p.add_argument("--data-dir", required=True, help="prepare_comet_subtype.py export directory")
     p.add_argument("--output", required=True)
-    p.add_argument("--split", choices=("validation", "test"), default="validation")
+    p.add_argument("--split", choices=("train", "validation", "test"), default="validation")
     p.add_argument("--rscript", default="Rscript")
     p.add_argument("--r-library")
     p.add_argument("--model-path", help="MedGemma ID (zero-shot), adapter directory or NVFlare FL_global_model.pt")
@@ -116,19 +159,25 @@ def main():
     p.add_argument("--max-seq-length", type=int, default=4096)
     p.add_argument("--parse", choices=("strict", "lenient"), default="strict",
                    help="strict = exact option text (fine-tuned models); lenient = first option mentioned (zero-shot)")
+    p.add_argument('--prediction-source', choices=('generated', 'option_scores'), default='generated')
+    p.add_argument('--skip-generation', action='store_true', help='Score candidates without generating free text.')
     p.add_argument("--positive-class", default=SUBTYPE_CLASSES[-1])
     p.add_argument("--ridge-predictions")
     p.add_argument("--medgemma-predictions")
     args = p.parse_args()
+    if args.skip_generation and (args.mode != 'medgemma' or args.prediction_source != 'option_scores'):
+        p.error('--skip-generation requires medgemma --prediction-source option_scores')
+    if args.split == 'train' and args.mode != 'medgemma':
+        p.error('Train-set diagnostics are supported only for MedGemma')
     root, out = Path(args.data_dir), Path(args.output)
     if out.exists():
         raise FileExistsError(out)
     task = json.loads((root / "task.json").read_text())
-    if task.get("task") not in ("comet_subtype", "comet_fusion"):
+    if task.get("task") != "comet_fusion" or task.get("classes") != ["NEG", "POS"]:
         raise ValueError("Not a COMET fusion export")
     classes, positive = task["classes"], args.positive_class
     validate_clients(root / "clients", task["n_clients"])
-    reference = json.loads((root / f"{args.split}.json").read_text())
+    reference = evaluation_reference(root, args.split, task)
     if args.mode == "ridge":
         if task["modality"] == "image":
             p.error("Ridge needs CpG features; export a methylation or multimodal layout")
@@ -149,8 +198,10 @@ def main():
         model, processor = load_model_and_processor(args.model_path, args.base_model, args.device)
         if not args.device.startswith("cuda"):
             model.to(args.device)
-        predictions = [predict_one(model, processor, row, root, classes, args.max_seq_length, args.parse) for row in reference]
+        predictions = [predict_one(model, processor, row, root, classes, args.max_seq_length, args.parse,
+                                   args.prediction_source, args.skip_generation) for row in reference]
         results = evaluate_rows(predictions, reference, classes, positive)
+        results['patient_level_score_0_5'] = patient_score_metrics(predictions, root)
         site_by_patient = {r["patient_id"]: r["site_id"] for r in reference}
         results["by_site"] = {}
         for site in task["sites"]:
@@ -178,6 +229,10 @@ def main():
     report = {"mode": args.mode, "split": args.split, "panel_id": task["panel_id"], "modality": task["modality"],
               "training_regime": task.get("training_regime"), "partition": task.get("partition"),
               "arguments": vars(args), "metrics": results}
+    report['evaluation_purpose'] = 'training_fit_diagnostic' if args.split == 'train' else 'held_out_evaluation'
+    if args.mode == 'medgemma' and Path(args.model_path).is_file():
+        from fusion_threshold import digest
+        report['checkpoint_sha256'] = digest(args.model_path)
     (out / "evaluation.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
 
