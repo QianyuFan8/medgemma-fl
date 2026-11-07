@@ -1,58 +1,28 @@
 {
-  "n_patient_tumors": 471,
-  "n_labeled": 213,
-  "n_missing_fusion": 258,
-  "features": "EPIC Ave_Beta only; subtype is a baseline, not a model input",
+  "n_patient_tumors": 404,
+  "n_labeled": 201,
+  "n_labeled_patients": 158,
+  "cv": "StratifiedGroupKFold(5) grouped by patient_id",
+  "n_missing_fusion": 203,
+  "subtypes": [
+    "ARMS",
+    "ERMS"
+  ],
+  "features": "EPIC Ave_Beta only; subtype is not a model input",
   "cpgs_per_model": 1000,
   "metrics": {
     "methylation_oof": {
-      "n": 213,
+      "n": 201,
       "n_pos": 108,
-      "n_neg": 105,
-      "roc_auc": 0.991005291005291,
-      "average_precision": 0.9940689947878936,
-      "balanced_accuracy": 0.9765873015873016,
-      "tn": 103,
+      "n_neg": 93,
+      "roc_auc": 0.9806849860613301,
+      "average_precision": 0.9779231923899366,
+      "balanced_accuracy": 0.9753584229390682,
+      "tn": 91,
       "fp": 2,
       "fn": 3,
       "tp": 105
-    },
-    "subtype_rule_oof": {
-      "n": 213,
-      "n_pos": 108,
-      "n_neg": 105,
-      "roc_auc": 0.9619047619047619,
-      "average_precision": 0.9310344827586207,
-      "balanced_accuracy": 0.9619047619047619,
-      "tn": 97,
-      "fp": 8,
-      "fn": 0,
-      "tp": 108
-    },
-    "methylation_oof_arms_only": {
-      "n": 116,
-      "n_pos": 108,
-      "n_neg": 8,
-      "roc_auc": 0.9803240740740741,
-      "average_precision": 0.9986025573296844,
-      "balanced_accuracy": 0.8611111111111112,
-      "tn": 6,
-      "fp": 2,
-      "fn": 3,
-      "tp": 105
-    },
-    "subtype_rule_arms_only": {
-      "n": 116,
-      "n_pos": 108,
-      "n_neg": 8,
-      "roc_auc": 0.5,
-      "average_precision": 0.9310344827586207,
-      "balanced_accuracy": 0.5,
-      "tn": 0,
-      "fp": 8,
-      "fn": 0,
-      "tp": 108
     }
   },
-  "final_model_C": 0.3593813663804626
+  "final_model_C": 0.5994842503189409
 }
