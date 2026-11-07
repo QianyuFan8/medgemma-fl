@@ -4,7 +4,7 @@ Final Fusion Status is missing for most patient tumors. Missing is not a class.
 The model trains only on POS versus NEG. Samples without a call are scored
 afterward and are not used as labels.
 
-Folds are grouped by patient (the Comp Bio ID before the underscore), so every
+Folds are grouped by patient (RMSs_meta.txt UID.Subject), so every
 array from one patient sits in the same fold. CpGs are chosen inside each
 training fold by variance, so the held-out patients do not choose the features.
 C is chosen by an inner 3-fold CV that is also grouped by patient.
@@ -57,14 +57,19 @@ def load_cohort() -> pd.DataFrame:
     clinical = pd.read_excel(DATA / "COMET_RMS.xlsx")
     fusion = pd.read_excel(DATA / "COMET_RMS_fusion_status.xlsx")
     meta = pd.read_csv(DATA / "RMSs_meta.txt", sep="\t", dtype=str)
-    tumors = meta.loc[meta["Sample.Type"].str.strip().eq("Patient tumor"), ["Sentrix_ID"]].copy()
+    tumors = meta.loc[meta["Sample.Type"].str.strip().eq("Patient tumor"), ["Sentrix_ID", "UID.Subject"]].copy()
     tumors["Sentrix_ID"] = tumors["Sentrix_ID"].str.strip()
+    tumors["UID.Subject"] = tumors["UID.Subject"].fillna("").str.strip()
+    if tumors["Sentrix_ID"].duplicated().any():
+        raise ValueError("RMSs_meta.txt has duplicate Sentrix_ID values")
 
     clinical = clinical.copy()
     clinical["Sample ID"] = clinical["Sample ID"].astype(str).str.strip()
     clinical["X850k Tumor File Name"] = clinical["X850k Tumor File Name"].astype(str).str.strip()
     clinical["Comp Bio ID"] = clinical["Comp Bio ID"].astype(str).str.strip()
     cohort = clinical.merge(tumors, left_on="X850k Tumor File Name", right_on="Sentrix_ID", how="inner")
+    if cohort["UID.Subject"].eq("").any():
+        raise ValueError("Some patient-tumor arrays lack RMSs_meta.txt UID.Subject")
 
     fusion = fusion.copy()
     fusion["Sample ID"] = fusion["Sample ID"].astype(str).str.strip()
@@ -73,10 +78,8 @@ def load_cohort() -> pd.DataFrame:
     cohort["Final Fusion Status"] = cohort["Final Fusion Status"].fillna("missing")
     cohort["Subtype Use For Clustering"] = cohort["Subtype Use For Clustering"].fillna("Unknown")
     cohort = cohort.loc[cohort["Subtype Use For Clustering"].isin(KEEP_SUBTYPES)]
-    if cohort["Comp Bio ID"].duplicated().any():
-        raise ValueError("More than one patient-tumor array for a Comp Bio ID")
-    # COMET has no patient column; SJRHB031244_D1 and SJRHB031244_R1 are one patient.
-    cohort["patient_id"] = cohort["Comp Bio ID"].str.split("_").str[0]
+    # Canonical patient identity is RMSs_meta.txt UID.Subject, not a Comp Bio ID prefix
+    # (old and new Comp Bio numbering, e.g. SJRHB022 and SJRHB003922, are one patient).
     if not cohort["Final Fusion Status"].isin(["POS", "NEG", "missing"]).all():
         unexpected = sorted(set(cohort["Final Fusion Status"]) - {"POS", "NEG", "missing"})
         raise ValueError(f"Unexpected fusion labels: {unexpected}")
@@ -248,7 +251,7 @@ def main() -> None:
     labeled_positions = np.flatnonzero(cohort["Final Fusion Status"].ne("missing").to_numpy())
     y_labeled = cohort.loc[labeled_positions, "Final Fusion Status"].eq("POS").to_numpy().astype(int)
     fold_of_labeled = np.full(len(cohort), -1, dtype=int)
-    groups = cohort.loc[labeled_positions, "patient_id"].to_numpy()
+    groups = cohort.loc[labeled_positions, "UID.Subject"].to_numpy()
     splitter = StratifiedGroupKFold(n_splits=N_SPLITS, shuffle=True, random_state=RANDOM_STATE)
     for fold, (_, test_index) in enumerate(splitter.split(labeled_positions, y_labeled, groups)):
         fold_of_labeled[labeled_positions[test_index]] = fold
@@ -256,7 +259,7 @@ def main() -> None:
     if (folds_per_patient > 1).any():
         raise ValueError("A patient's arrays were split across folds")
 
-    patient_ids = cohort["patient_id"].to_numpy()
+    patient_ids = cohort["UID.Subject"].to_numpy()
     selected = select_cpgs(cohort, columns, fold_of_labeled)
     union = list(dict.fromkeys(cpg for name in selected for cpg in selected[name]))
     beta = load_beta(columns, union)
@@ -282,7 +285,7 @@ def main() -> None:
     missing_rows = np.flatnonzero(cohort["Final Fusion Status"].eq("missing").to_numpy())
     missing_score = final.predict_proba(transformed[missing_rows])[:, 1]
 
-    ids = ["Sample ID", "Comp Bio ID", "patient_id", "Sentrix_ID", "Subtype Use For Clustering"]
+    ids = ["Sample ID", "Comp Bio ID", "UID.Subject", "Sentrix_ID", "Subtype Use For Clustering"]
     review = cohort.loc[labeled, ids + ["Final Fusion Status"]].copy()
     review["fold"] = fold_of_labeled[labeled]
     review["predicted_pos_probability"] = oof_score[labeled]
@@ -292,7 +295,7 @@ def main() -> None:
     wrong = review["predicted_fusion_status"].ne(review["Final Fusion Status"])
     errors = review.loc[wrong].join(cohort[FUSION_DETAIL + CLINICAL_DETAIL])
     errors.insert(0, "error", np.where(errors["Final Fusion Status"].eq("NEG"), "false positive", "false negative"))
-    errors.sort_values(["error", "patient_id"]).to_csv(OUT / "mispredictions.csv", index=False)
+    errors.sort_values(["error", "UID.Subject"]).to_csv(OUT / "mispredictions.csv", index=False)
 
     imputed = cohort.loc[missing_rows, ids].copy()
     imputed["predicted_pos_probability"] = missing_score
@@ -303,8 +306,8 @@ def main() -> None:
     summary = {
         "n_patient_tumors": int(len(cohort)),
         "n_labeled": int(labeled.sum()),
-        "n_labeled_patients": int(cohort.loc[labeled, "patient_id"].nunique()),
-        "cv": f"StratifiedGroupKFold({N_SPLITS}) grouped by patient_id",
+        "n_labeled_patients": int(cohort.loc[labeled, "UID.Subject"].nunique()),
+        "cv": f"StratifiedGroupKFold({N_SPLITS}) grouped by UID.Subject",
         "n_missing_fusion": int((~labeled).sum()),
         "subtypes": KEEP_SUBTYPES,
         "features": "EPIC Ave_Beta only; subtype is not a model input",

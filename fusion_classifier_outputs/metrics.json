@@ -1,8 +1,8 @@
 {
   "n_patient_tumors": 404,
   "n_labeled": 201,
-  "n_labeled_patients": 158,
-  "cv": "StratifiedGroupKFold(5) grouped by patient_id",
+  "n_labeled_patients": 148,
+  "cv": "StratifiedGroupKFold(5) grouped by UID.Subject",
   "n_missing_fusion": 203,
   "subtypes": [
     "ARMS",
@@ -15,14 +15,14 @@
       "n": 201,
       "n_pos": 108,
       "n_neg": 93,
-      "roc_auc": 0.9806849860613301,
-      "average_precision": 0.9779231923899366,
-      "balanced_accuracy": 0.9753584229390682,
-      "tn": 91,
-      "fp": 2,
+      "roc_auc": 0.9838709677419355,
+      "average_precision": 0.9866638378036713,
+      "balanced_accuracy": 0.9646057347670252,
+      "tn": 89,
+      "fp": 4,
       "fn": 3,
       "tp": 105
     }
   },
-  "final_model_C": 0.5994842503189409
+  "final_model_C": 0.1668100537200059
 }
