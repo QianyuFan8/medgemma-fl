@@ -45,11 +45,50 @@ def read_split_table(prepared):
     return rows
 
 
-def load_bag(embeddings, slide_id):
+def load_bag(embeddings, slide_id, standardization=None):
     import h5py
 
-    with h5py.File(Path(embeddings) / f"{slide_id}.h5", "r") as f:
-        return f["feats"][:].astype(np.float32), f["coords"][:], dict(f.attrs)
+    directories = [Path(embeddings)] if isinstance(embeddings, (str, Path)) else [Path(x) for x in embeddings]
+    bags, coords, attrs = [], None, None
+    for directory in directories:
+        with h5py.File(directory / f"{slide_id}.h5", "r") as f:
+            feats, current_coords, current_attrs = f["feats"][:].astype(np.float32), f["coords"][:], dict(f.attrs)
+        if coords is None:
+            coords, attrs = current_coords, current_attrs
+        elif not np.array_equal(coords, current_coords):
+            raise ValueError(f"Embedding coordinate mismatch for {slide_id}: {directory}")
+        if standardization is not None:
+            mean, scale = standardization[len(bags)]
+            feats = (feats - mean) / scale
+        bags.append(feats)
+    return np.concatenate(bags, axis=1), coords, attrs
+
+
+def fit_standardization(embeddings, slide_ids):
+    directories = [Path(embeddings)] if isinstance(embeddings, (str, Path)) else [Path(x) for x in embeddings]
+    sums = sums2 = counts = None
+    for slide_id in slide_ids:
+        current = []
+        for directory in directories:
+            import h5py
+            with h5py.File(directory / f"{slide_id}.h5", "r") as f:
+                current.append(f["feats"][:].astype(np.float64))
+        if sums is None:
+            sums = [np.zeros(x.shape[1]) for x in current]
+            sums2 = [np.zeros(x.shape[1]) for x in current]
+            counts = [0] * len(current)
+        for j, x in enumerate(current):
+            sums[j] += np.nansum(x, axis=0)
+            sums2[j] += np.nansum(x * x, axis=0)
+            counts[j] += x.shape[0]
+    if sums is None:
+        raise ValueError("No training bags available for standardization")
+    out = []
+    for s, s2, n in zip(sums, sums2, counts):
+        mean = s / n
+        scale = np.sqrt(np.maximum(s2 / n - mean * mean, 1e-8))
+        out.append((mean.astype(np.float32), scale.astype(np.float32)))
+    return out
 
 
 def build_model(dim, hidden=512, attn=256, dropout=0.25):
@@ -106,8 +145,9 @@ def train(a):
     patient_by_slide = {r['slide_id']: r['patient_id'] for r in rows}
     bags = {s: [] for s in ("train", "validation", "test")}
     dim = None
+    standardization = fit_standardization(a.embeddings, [r["slide_id"] for r in rows if r["split"] == "train"])
     for r in rows:
-        feats, _, _ = load_bag(a.embeddings, r["slide_id"])
+        feats, _, _ = load_bag(a.embeddings, r["slide_id"], standardization)
         if a.max_tiles and len(feats) > a.max_tiles:
             feats = feats[np.sort(np.random.default_rng(a.seed).choice(len(feats), a.max_tiles, replace=False))]
         dim = feats.shape[1]
@@ -150,7 +190,7 @@ def train(a):
     with torch.no_grad():
         for split, items in bags.items():
             for feats, label, slide_id in items:
-                full, coords, _ = load_bag(a.embeddings, slide_id)
+                full, coords, _ = load_bag(a.embeddings, slide_id, standardization)
                 logits, weights = model(torch.from_numpy(full).to(device))
                 np.save(out / "attention" / f"{slide_id}.npy", weights.cpu().numpy())
                 scored.append(dict(patient_id=patient_by_slide[slide_id], slide_id=slide_id, split=split, truth=SUBTYPE_CLASSES[label],
@@ -221,7 +261,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="command", required=True)
     tr = sub.add_parser("train")
-    tr.add_argument("--embeddings", required=True, help="Directory of <slide>.h5 from data_preprocessing/wsi_embed.py")
+    tr.add_argument("--embeddings", required=True, nargs="+", help="One or more directories of <slide>.h5")
     tr.add_argument("--prepared", required=True, help="prepare_comet_subtype.py prepare output (splits.tsv)")
     tr.add_argument("--output", required=True)
     tr.add_argument("--epochs", type=int, default=30)
@@ -235,7 +275,7 @@ def main():
     tr.add_argument("--device", default="cuda")
     tr.add_argument("--seed", type=int, default=20261011)
     mo = sub.add_parser("montage")
-    mo.add_argument("--embeddings", required=True)
+    mo.add_argument("--embeddings", required=True, nargs="+")
     mo.add_argument("--abmil", required=True, help="train output directory (attention/*.npy)")
     mo.add_argument("--output", required=True)
     mo.add_argument("--slide-dir", help="Override the slide path recorded in the embeddings")

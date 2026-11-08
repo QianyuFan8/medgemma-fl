@@ -1,9 +1,10 @@
-"""Assemble the four COMET subtype settings into one comparison table.
+"""Assemble predictive performance and cost metrics for matched experiments.
 
-Reads evaluate_subtype.py outputs (evaluation.json + predictions.csv), ABMIL
-slide_scores.tsv, and NVFlare client logs (runtime, peak memory, adapter bytes).
-Prints Markdown and writes a JSON copy next to it. Validation by default; pass
---split test only after every setting is frozen.
+The main tables intentionally stay compact: balanced accuracy, ROC-AUC, PR-AUC,
+sample counts, computational cost, and federated communication cost. Detailed
+metrics (recall, thresholds, invalid replies, and score summaries) remain in
+the JSON output. A settings manifest can describe the nine combinations of
+three ABMIL feature settings and three MedGemma regimes.
 """
 from __future__ import annotations
 
@@ -134,30 +135,44 @@ def cost_cells(kind, cost):
     ]
 
 
+def load_settings(path, runs, split, logs, abmil):
+    """Load a comparison manifest while retaining the historical default."""
+    if path:
+        rows = json.loads(Path(path).read_text())
+        if isinstance(rows, dict):
+            rows = rows.get("settings", rows.get("experiments", []))
+        out = []
+        for row in rows:
+            item = dict(row)
+            item.setdefault("kind", "pred")
+            item["path"] = Path(item["path"])
+            if item.get("log"):
+                item["log"] = Path(item["log"])
+            out.append(item)
+        return out
+    return [
+        {"name": "01 H-Optimus-1 + ABMIL", "kind": "abmil", "path": Path(abmil), "log": None},
+        {"name": "02 MedGemma zero-shot", "kind": "pred", "path": runs / f"zero_shot_multimodal_{split}_v1" / "predictions.csv", "log": None},
+        {"name": "03 MedGemma centralized LoRA", "kind": "pred", "path": runs / f"central_multimodal_{split}_v1" / "predictions.csv", "log": logs / f"comet_central_multimodal_{split}.log"},
+        {"name": "04 MedGemma federated LoRA IID", "kind": "pred", "path": runs / f"fl_multimodal_iid_{split}_v1" / "predictions.csv", "log": logs / f"comet_fl_multimodal_iid_{split}.log"},
+    ]
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--split", choices=("validation", "test"), default="validation")
     p.add_argument("--runs", default="runs/comet_subtype")
     p.add_argument("--logs", default="logs")
     p.add_argument("--abmil", default="runs/comet_subtype/abmil_hoptimus1_v1")
+    p.add_argument("--settings-manifest", help="JSON list of experiment settings; paths may be absolute or relative to the current directory")
     p.add_argument("--tag", default="v1")
     p.add_argument("--output", default=None)
     a = p.parse_args()
     runs, logs, S, T = Path(a.runs), Path(a.logs), a.split, a.tag
-    settings = [
-        ("01 H-Optimus-1 + ABMIL (image)", "abmil", Path(a.abmil) / "slide_scores.tsv", None),
-        ("02 MedGemma 1.5 zero-shot", "pred", runs / f"zero_shot_multimodal_{S}_{T}" / "predictions.csv", None),
-        ("03 MedGemma 1.5 + QLoRA centralized", "pred", runs / f"central_multimodal_{S}_{T}" / "predictions.csv",
-         logs / f"comet_central_multimodal_{T}.log"),
-        ("04 MedGemma 1.5 + QLoRA federated, IID", "pred", runs / f"fl_multimodal_iid_{S}_{T}" / "predictions.csv",
-         logs / f"comet_fl_multimodal_iid_{T}.log"),
-        ("04 MedGemma 1.5 + QLoRA federated, skew 0.8", "pred", runs / f"fl_multimodal_skew08_{S}_{T}" / "predictions.csv",
-         logs / f"comet_fl_multimodal_skew08_{T}.log"),
-        ("04 MedGemma 1.5 + QLoRA federated, skew 1.0", "pred", runs / f"fl_multimodal_skew10_{S}_{T}" / "predictions.csv",
-         logs / f"comet_fl_multimodal_skew10_{T}.log"),
-    ]
+    settings = load_settings(a.settings_manifest, runs, S, logs, Path(a.abmil) / "slide_scores.tsv")
     performance, costs, out = [], [], {}
-    for name, kind, path, log in settings:
+    for setting in settings:
+        name, kind, path, log = setting["name"], setting.get("kind", "pred"), Path(setting["path"]), setting.get("log")
         if not path.is_file():
             performance.append(f"| {name} | missing: {path} |" + " |" * 7)
             costs.append(f"| {name} | missing log |" + " |" * 7)
@@ -166,24 +181,22 @@ def main():
         c = from_log(log)
         out[name] = {"metrics": m, "cost": c, "source": str(path)}
         performance.append(
-            f"| {name} | {m['n_patients']} | {m['roc_auc']:.3f} | {m['pr_auc']:.3f} | {m['accuracy']:.3f} | "
-            f"{m['balanced_accuracy']:.3f} | {m['recall']['NEG']:.2f} | {m['recall']['POS']:.2f} | "
-            f"{m['invalid_predictions']} |"
+            f"| {name} | {m.get('n_patients', '—')} | {m.get('n_records', '—')} | "
+            f"{m['balanced_accuracy']:.3f} | {m['roc_auc']:.3f} | {m['pr_auc']:.3f} |"
         )
         costs.append("| " + " | ".join([name, *cost_cells(kind, c)]) + " |")
     perf_header = (
-        f"| Setting ({S}) | n | ROC-AUC | PR-AUC | Accuracy | Balanced accuracy | NEG recall | POS recall | "
-        "Replies that are not POS or NEG |\n|---|---|---|---|---|---|---|---|---|"
+        f"| Setting ({S}) | Patients | Records | Balanced accuracy | ROC-AUC | PR-AUC |\n"
+        "|---|---:|---:|---:|---:|---:|"
     )
     cost_header = (
-        "| Setting | Train time | GPU hours | Peak GPU memory | Local train time | Rounds | "
-        "Upload per round | Download per round | Total traffic |\n"
-        "|---|---|---|---|---|---|---|---|---|"
+        "| Setting | Training time | GPU hours | Peak GPU memory | Local computation | Rounds | "
+        "Upload per round | Download per round | Total communication |\n"
+        "|---|---|---|---|---|---:|---|---|---|"
     )
     print("## Predictive performance\n")
     print(perf_header + "\n" + "\n".join(performance))
-    print("\nA reply counts in the last column when it is not exactly POS or NEG. "
-          "That case is scored as wrong, not as a prediction of NEG.\n")
+    print("\nDetailed recall, thresholds, invalid replies, and score summaries are retained in the JSON output.\n")
     print("## Computational cost and communication\n")
     print(cost_header + "\n" + "\n".join(costs))
     print("\nTrain time and GPU hours add up every site. Local train time and peak GPU memory are listed per site. "

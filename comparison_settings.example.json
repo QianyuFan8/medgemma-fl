@@ -1,0 +1,53 @@
+[
+  {
+    "name": "A / H-optimus-1 + ABMIL + Spatial16 / Zero-shot",
+    "kind": "pred",
+    "path": "runs/ablation/hoptimus1_spatial16/zero_shot/predictions.csv"
+  },
+  {
+    "name": "A / H-optimus-1 + ABMIL + Spatial16 / Centralized LoRA",
+    "kind": "pred",
+    "path": "runs/ablation/hoptimus1_spatial16/centralized/predictions.csv",
+    "log": "logs/ablation/hoptimus1_spatial16/centralized.log"
+  },
+  {
+    "name": "A / H-optimus-1 + ABMIL + Spatial16 / Federated LoRA",
+    "kind": "pred",
+    "path": "runs/ablation/hoptimus1_spatial16/federated/predictions.csv",
+    "log": "logs/ablation/hoptimus1_spatial16/federated.log"
+  },
+  {
+    "name": "B / EmbeddingGemma 2 + ABMIL + Spatial16 / Zero-shot",
+    "kind": "pred",
+    "path": "runs/ablation/embeddinggemma2_spatial16/zero_shot/predictions.csv"
+  },
+  {
+    "name": "B / EmbeddingGemma 2 + ABMIL + Spatial16 / Centralized LoRA",
+    "kind": "pred",
+    "path": "runs/ablation/embeddinggemma2_spatial16/centralized/predictions.csv",
+    "log": "logs/ablation/embeddinggemma2_spatial16/centralized.log"
+  },
+  {
+    "name": "B / EmbeddingGemma 2 + ABMIL + Spatial16 / Federated LoRA",
+    "kind": "pred",
+    "path": "runs/ablation/embeddinggemma2_spatial16/federated/predictions.csv",
+    "log": "logs/ablation/embeddinggemma2_spatial16/federated.log"
+  },
+  {
+    "name": "C / H-optimus-1 + EmbeddingGemma 2 + ABMIL + Spatial16 / Zero-shot",
+    "kind": "pred",
+    "path": "runs/ablation/joint_spatial16/zero_shot/predictions.csv"
+  },
+  {
+    "name": "C / H-optimus-1 + EmbeddingGemma 2 + ABMIL + Spatial16 / Centralized LoRA",
+    "kind": "pred",
+    "path": "runs/ablation/joint_spatial16/centralized/predictions.csv",
+    "log": "logs/ablation/joint_spatial16/centralized.log"
+  },
+  {
+    "name": "C / H-optimus-1 + EmbeddingGemma 2 + ABMIL + Spatial16 / Federated LoRA",
+    "kind": "pred",
+    "path": "runs/ablation/joint_spatial16/federated/predictions.csv",
+    "log": "logs/ablation/joint_spatial16/federated.log"
+  }
+]

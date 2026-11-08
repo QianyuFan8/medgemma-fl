@@ -67,7 +67,7 @@ def read_clam_coords(path):
 class TileDataset:
     """Reads tiles lazily; each DataLoader worker opens its own slide handle."""
 
-    def __init__(self, slide_path, coords, tile_level0, tile, transform):
+    def __init__(self, slide_path, coords, tile_level0, tile, transform=None):
         self.slide_path, self.coords, self.tile_level0, self.tile, self.transform = slide_path, coords, tile_level0, tile, transform
         self._slide = None
 
@@ -83,13 +83,29 @@ class TileDataset:
         region = self._slide.read_region((x, y), 0, (self.tile_level0, self.tile_level0)).convert("RGB")
         if self.tile_level0 != self.tile:
             region = region.resize((self.tile, self.tile), Image.LANCZOS)
-        return self.transform(region), i
+        return (self.transform(region) if self.transform is not None else region), i
 
 
 def load_encoder(model_name, device, norm="bioptimus"):
     import timm
     import torch
     from torchvision import transforms
+
+    if "embeddinggemma" in model_name.lower():
+        from transformers import AutoModel, AutoProcessor
+
+        # EmbeddingGemma has its own image processor and should not use the
+        # H-optimus/ImageNet normalization below.  Its model card recommends
+        # bf16 or fp32 (not fp16) for image embeddings.
+        dtype = torch.bfloat16 if device.type == "cuda" and torch.cuda.is_bf16_supported() else torch.float32
+        processor = AutoProcessor.from_pretrained(model_name)
+        model = AutoModel.from_pretrained(model_name, torch_dtype=dtype).eval().to(device)
+        with torch.inference_mode():
+            probe = processor(images=[Image.new("RGB", (224, 224))], return_tensors="pt")
+            probe = {k: v.to(device) for k, v in probe.items() if hasattr(v, "to")}
+            outputs = model(**probe)
+            probe_features = _embeddinggemma_image_features(model, outputs)
+        return model, processor, int(probe_features.shape[-1]), "embeddinggemma", dtype
 
     kwargs = {"init_values": 1e-5, "dynamic_img_size": False} if "bioptimus" in model_name else {}
     model = timm.create_model(model_name, pretrained=True, num_classes=0, **kwargs)
@@ -98,10 +114,27 @@ def load_encoder(model_name, device, norm="bioptimus"):
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=mean, std=std)])
     with torch.inference_mode():
         dim = model(torch.zeros(1, 3, 224, 224, device=device)).shape[-1]
-    return model, transform, int(dim)
+    return model, transform, int(dim), "timm", torch.float16
 
 
-def embed_slide(slide_path, out_path, model, transform, dim, args, device):
+def _embeddinggemma_image_features(model, outputs):
+    """Extract the pooled 768-d image embedding across Transformers versions."""
+    for name in ("image_embeds", "image_embeddings", "pooler_output"):
+        value = getattr(outputs, name, None)
+        if value is not None and getattr(value, "ndim", 0) == 2:
+            return value
+    if hasattr(model, "get_image_features"):
+        value = model.get_image_features(**outputs)
+        if getattr(value, "ndim", 0) == 2:
+            return value
+    if isinstance(outputs, dict):
+        for value in outputs.values():
+            if getattr(value, "ndim", 0) == 2 and value.shape[-1] in (128, 256, 512, 768):
+                return value
+    raise RuntimeError("Could not locate EmbeddingGemma image embeddings in Transformers output")
+
+
+def embed_slide(slide_path, out_path, model, transform, dim, args, device, encoder_kind):
     import h5py
     import openslide
     import torch
@@ -119,17 +152,29 @@ def embed_slide(slide_path, out_path, model, transform, dim, args, device):
         coords = coords[np.sort(rng.choice(len(coords), args.max_tiles, replace=False))]
     if len(coords) == 0:
         raise ValueError(f"No tissue tiles found in {slide_path}; inspect thresholds")
-    dataset = TileDataset(str(slide_path), coords, tile_level0, args.tile, transform)
-    loader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False)
+    dataset = TileDataset(str(slide_path), coords, tile_level0, args.tile,
+                          transform if encoder_kind == "timm" else None)
+    collate = None if encoder_kind == "timm" else lambda batch: ([x for x, _ in batch], np.asarray([i for _, i in batch]))
+    loader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers,
+                                         shuffle=False, collate_fn=collate)
     feats = np.zeros((len(coords), dim), dtype=np.float32)
-    with torch.inference_mode(), torch.autocast(device_type=device.type, dtype=torch.float16, enabled=device.type == "cuda"):
+    with torch.inference_mode():
         for batch, idx in loader:
-            feats[idx.numpy()] = model(batch.to(device)).float().cpu().numpy()
+            if encoder_kind == "embeddinggemma":
+                inputs = transform(images=batch, return_tensors="pt")
+                inputs = {k: v.to(device) for k, v in inputs.items() if hasattr(v, "to")}
+                outputs = model(**inputs)
+                values = _embeddinggemma_image_features(model, outputs)
+            else:
+                with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=device.type == "cuda"):
+                    values = model(batch.to(device))
+            feats[idx.numpy()] = values.float().cpu().numpy()
     with h5py.File(out_path, "w") as f:
         f.create_dataset("feats", data=feats)
         f.create_dataset("coords", data=coords)
         f.attrs.update(dict(tile_level0=tile_level0, mpp0=mpp0, target_mpp=args.target_mpp, tile=args.tile,
-                            model=args.model, norm=args.norm, slide=str(slide_path.resolve())))
+                            model=args.model, norm=args.norm, encoder_kind=encoder_kind,
+                            feature_dim=dim, slide=str(slide_path.resolve())))
     return len(coords), tile_level0, mpp0
 
 
@@ -168,7 +213,7 @@ def main():
             raise FileNotFoundError(f"Slides not found: {sorted(missing)}")
     if args.norm is None:
         args.norm = "bioptimus" if "bioptimus" in args.model else "imagenet"
-    model, transform, dim = load_encoder(args.model, device, args.norm)
+    model, transform, dim, encoder_kind, dtype = load_encoder(args.model, device, args.norm)
     print(f"encoder {args.model}: {dim}-d features, {args.norm} normalization")
     log = []
     for slide_path in slides:
@@ -176,11 +221,11 @@ def main():
         if target.exists():
             print(f"skip {slide_path.stem}: exists")
             continue
-        n, tile_level0, mpp0 = embed_slide(slide_path, target, model, transform, dim, args, device)
+        n, tile_level0, mpp0 = embed_slide(slide_path, target, model, transform, dim, args, device, encoder_kind)
         log.append(dict(slide=slide_path.stem, tiles=n, tile_level0=tile_level0, mpp0=mpp0))
         print(f"{slide_path.stem}: {n} tiles, {tile_level0} px at level 0 (mpp {mpp0:.4f})")
     (out / "embedding_log.json").write_text(json.dumps(dict(model=args.model, dim=dim, tile=args.tile,
-                                                            target_mpp=args.target_mpp, slides=log), indent=2) + "\n")
+                                                            target_mpp=args.target_mpp, dtype=str(dtype), slides=log), indent=2) + "\n")
 
 
 if __name__ == "__main__":
