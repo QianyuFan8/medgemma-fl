@@ -23,7 +23,9 @@ class FederatedLauncherTests(unittest.TestCase):
             env={**os.environ,'PATH':str(root/'mock-bin')+':'+os.environ['PATH'],
                  'HF_HOME':str(root/'hf'),'CAPTURE_ARGS':str(root/'args.txt')}
             for scope in ('language-only','lora-only'):
-                run=subprocess.run(['bash','scripts/launch.sh',scope,'60','1'],cwd=root,env=env,capture_output=True,text=True)
+                run=subprocess.run(['bash','scripts/launch.sh',scope,'60','1','--gpus','0,1,2,3',
+                                    '--no-local_eval','--preprocess_cache_dir','/tmp/cache with spaces'],
+                                    cwd=root,env=env,capture_output=True,text=True)
                 self.assertEqual(run.returncode,0,run.stderr)
                 path=Path((root/'.federated_tiles16.latest').read_text().strip())
                 for _ in range(100):
@@ -34,6 +36,9 @@ class FederatedLauncherTests(unittest.TestCase):
                 for flag,value in (('--scope',scope),('--rounds','60'),('--local-epochs','1')):
                     self.assertEqual(args[args.index(flag)+1],value)
                 self.assertIn('run_federated_tiles16.py',args)
+                self.assertEqual(args[args.index('--gpus')+1],'0,1,2,3')
+                self.assertEqual(args[args.index('--preprocess_cache_dir')+1],'/tmp/cache with spaces')
+                self.assertIn('--no-local_eval',args)
 
 
 if __name__ == '__main__':unittest.main()

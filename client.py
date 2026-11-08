@@ -21,13 +21,16 @@ https://github.com/google-health/medgemma/blob/main/notebooks/fine_tune_with_hug
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import shutil
 import signal
 import sys
 import time
 
-from client_gpu_lock import client_gpu_slot
+from training_performance import add_performance_args, effective_batch_size
+from training_cache import maybe_cache_collator
+from distributed_training import DistributedClient
 from data_utils import DEFAULT_MODEL_NAME_OR_PATH, format_training_example, resolve_image_path
 from datasets import Image, load_dataset
 from methylation_utils import build_methylation_collator, format_methylation_example
@@ -139,7 +142,7 @@ def _build_training_args(args, output_dir: str, do_eval: bool) -> SFTConfig:
         per_device_train_batch_size=args.per_device_train_batch_size,
         per_device_eval_batch_size=args.per_device_eval_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
-        gradient_checkpointing=True,
+        gradient_checkpointing=getattr(args, 'gradient_checkpointing', True),
         gradient_checkpointing_kwargs={"use_reentrant": False},
         optim="adamw_torch_fused",
         logging_steps=args.logging_steps,
@@ -153,12 +156,18 @@ def _build_training_args(args, output_dir: str, do_eval: bool) -> SFTConfig:
         dataset_kwargs={"skip_prepare_dataset": True},
         remove_unused_columns=False,
         label_names=["labels"],
+        prediction_loss_only=True,
     )
     if args.max_steps is not None:
         training_args["max_steps"] = args.max_steps
     if getattr(args, "seed", None) is not None:
         training_args["seed"] = args.seed
         training_args["data_seed"] = args.seed
+    if int(os.environ.get('WORLD_SIZE', '1')) > 1:
+        # Image adapters are unused in CpG-only batches. Non-reentrant
+        # checkpointing above is compatible with unused-parameter detection.
+        training_args['ddp_find_unused_parameters'] = True
+        training_args['ddp_timeout'] = 3600
     if args.task in ("methylation", "subtype"):
         # Keep warmup_steps above: the VM's Transformers/TRL accepts a
         # fractional value here and no longer accepts warmup_ratio.
@@ -173,6 +182,7 @@ def _build_training_args(args, output_dir: str, do_eval: bool) -> SFTConfig:
 
 def main():
     parser = argparse.ArgumentParser(description="Federated MedGemma client with QLoRA-based local training.")
+    add_performance_args(parser)
     parser.add_argument("--task", choices=("histology", "methylation", "subtype"), default="histology")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--client_gpu_lock", default=None,
@@ -277,9 +287,9 @@ def main():
     if not os.path.isfile(train_json):
         raise FileNotFoundError(f"Expected train.json at {train_json}.")
 
+    distributed = DistributedClient(flare)
     require_supported_gpu()
-    flare.init()
-    client_name = flare.system_info().get("site_name", "unknown")
+    client_name = distributed.site_name()
 
     processor = AutoProcessor.from_pretrained(args.model_name_or_path, trust_remote_code=True, use_fast=False)
     processor.tokenizer.padding_side = "right"
@@ -296,20 +306,23 @@ def main():
         collate_fn = build_multimodal_collator(processor, args.max_seq_length, image_token_id)
     else:
         collate_fn = _build_collate_fn(processor)
-    eval_dataset = _load_site_split(validation_json, image_root, args.task) if os.path.isfile(validation_json) else None
+    collate_fn = maybe_cache_collator(collate_fn, processor, args)
+    eval_dataset = (_load_site_split(validation_json, image_root, args.task)
+                    if args.local_eval and os.path.isfile(validation_json) else None)
 
     print(
         f"site={client_name}, train_samples={len(train_dataset)}, validation_samples={len(eval_dataset or [])}, "
         f"local_lora_rank={args.lora_rank}"
     )
-    with client_gpu_slot(args.client_gpu_lock, client_name, "initialize"):
+    with distributed.gpu_slot(args.client_gpu_lock, client_name, "initialize"):
         model = create_peft_medgemma_model(
             model_name_or_path=args.model_name_or_path,
-            quantized=True,
-            device_map={"": 0},
+            quantized=args.quantized,
+            device_map={"": distributed.local_rank},
             lora_rank=args.lora_rank,
             adapter_scope=args.adapter_scope,
             attn_implementation=args.attn_implementation,
+            gradient_checkpointing=args.gradient_checkpointing,
         )
         print(f"site={client_name}")
         model.print_trainable_parameters()
@@ -327,11 +340,12 @@ def main():
         work_dir = abs_path(args.work_dir)
     os.makedirs(work_dir, exist_ok=True)
     import json
-    with open(os.path.join(work_dir, "trainable_parameters.json"), "w") as f:
-        json.dump(parameter_audit, f, indent=2)
+    if distributed.rank == 0:
+        with open(os.path.join(work_dir, "trainable_parameters.json"), "w") as f:
+            json.dump(parameter_audit, f, indent=2)
 
-    while flare.is_running():
-        input_model = flare.receive()
+    while distributed.is_running():
+        input_model = distributed.receive()
         if input_model is None:
             break
 
@@ -345,7 +359,7 @@ def main():
                 raise ValueError("SCAFFOLD requires every site rank to equal the global LoRA rank (no bank truncation)")
         site_rank_map = build_uniform_lora_rank_map(adapter_params.keys(), args.lora_rank)
         local_adapter_state = truncate_global_bank_for_site(adapter_params, site_rank_map)
-        with client_gpu_slot(args.client_gpu_lock, client_name, f"round-{current_round}"):
+        with distributed.gpu_slot(args.client_gpu_lock, client_name, f"round-{current_round}"):
             apply_adapter_state(model, local_adapter_state)
             model.train()
             fl_state.start_round(model, server_control, train_labels=list(train_dataset["label_name"]),
@@ -357,8 +371,9 @@ def main():
                 round_eval_dataset = eval_dataset
 
             round_output_dir = os.path.join(work_dir, f"round-{current_round}")
-            if os.path.isdir(round_output_dir):
+            if distributed.rank == 0 and os.path.isdir(round_output_dir):
                 shutil.rmtree(round_output_dir)
+            distributed.barrier()
 
             sync_cuda()
             round_start_time = time.perf_counter()
@@ -381,17 +396,28 @@ def main():
             sync_cuda()
             train_start_time = time.perf_counter()
             train_result = trainer.train()
-            if epoch_callback.saved != set(args.save_adapter_epochs):
+            if distributed.rank == 0 and epoch_callback.saved != set(args.save_adapter_epochs):
                 raise RuntimeError('Training did not save every requested epoch checkpoint')
             sync_cuda()
             train_runtime_sec = time.perf_counter() - train_start_time
             train_loss = float(getattr(train_result, "training_loss", float("nan")))
             os.makedirs(round_output_dir, exist_ok=True)
-            with open(os.path.join(round_output_dir, "training_diagnostics.json"), "w") as f:
+            diagnostics_name = 'training_diagnostics.json' if distributed.rank == 0 else f'rank-{distributed.rank}_performance.json'
+            with open(os.path.join(round_output_dir, diagnostics_name), "w") as f:
                 json.dump({"seed": args.seed, "learning_rate": args.learning_rate,
                            "num_train_epochs": args.num_train_epochs, "max_steps": args.max_steps,
                            "global_step": trainer.state.global_step, "epoch": trainer.state.epoch, "training_loss": train_loss,
-                           "train_records": len(train_dataset), "log_history": trainer.state.log_history}, f, indent=2)
+                           "train_records": len(train_dataset), "log_history": trainer.state.log_history,
+                           "performance": {"gradient_checkpointing": args.gradient_checkpointing,
+                                           "quantized": args.quantized, "local_eval": args.local_eval,
+                                           "world_size": distributed.world,
+                                           "effective_batch_size": effective_batch_size(args, distributed.world),
+                                           "estimated_records_per_ddp_epoch":
+                                               math.ceil(len(train_dataset)/(distributed.world*args.per_device_train_batch_size))*
+                                               distributed.world*args.per_device_train_batch_size
+                                               if distributed.world > 1 else len(train_dataset),
+                                           "train_runtime_sec": train_runtime_sec,
+                                           "cache_cumulative": getattr(collate_fn, 'stats', None)}}, f, indent=2)
             metrics = {"loss": train_loss}
             eval_runtime_sec = 0.0
             if round_eval_dataset is not None:
@@ -422,7 +448,7 @@ def main():
             model.zero_grad(set_to_none=True)
             del trainer
             free_memory()
-        flare.send(flare.FLModel(params_type=flare.ParamsType.FULL, params=params, metrics=metrics, meta=meta))
+        distributed.send(flare.FLModel(params_type=flare.ParamsType.FULL, params=params, metrics=metrics, meta=meta))
         print(
             f"site={client_name}, round={current_round}, local_lora_rank={args.lora_rank}, "
             f"train_runtime_sec={train_runtime_sec:.2f}, eval_runtime_sec={eval_runtime_sec:.2f}, "
@@ -438,6 +464,7 @@ def main():
 
         del params, input_model, local_adapter_state
         free_memory()
+    distributed.close()
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 """CPU-only regression tests for argument construction, not GPU/TRL integration."""
 import ast
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -17,7 +18,7 @@ def load_builder():
             raise TypeError("Unexpected keyword argument 'warmup_ratio'")
         return kwargs
 
-    namespace = {"SFTConfig": config_stub}
+    namespace = {"SFTConfig": config_stub, "os": os}
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), "exec"), namespace)
     return namespace["_build_training_args"]
 

@@ -1,7 +1,8 @@
-"""Four matched federated 16-image + CpG runs for one LoRA scope on one GPU.
+"""Four federated 16-image + CpG runs for one LoRA scope on configurable GPUs.
 
 Each run starts from the base model. All three simulated clients participate in
-each round, sequentially. Optimizer and linear LR scheduler restart each local
+each round. Shared GPU groups serialize; disjoint groups run concurrently.
+Optimizer and linear LR scheduler restart each local
 round (existing client behavior); this is not centralized continuous training.
 """
 import argparse
@@ -18,6 +19,8 @@ from prepare_multiimage_diagnostics import processor_preflight
 from run_central_diagnostics import run_stage
 from run_multimodal_tiles60 import verify_scope
 from run_spatial20_inference import digest, write_csv, write_json
+from training_performance import (add_performance_args, performance_cli, client_gpu_plan,
+                                  parse_client_gpu_groups, accumulation_for_world)
 
 CONFIGS = [('iid', 'fedavg'), ('iid', 'fedlc'), ('skew08', 'fedavg'), ('skew08', 'fedlc')]
 SEED = 20261011
@@ -27,7 +30,7 @@ def saved_rounds(rounds):
     return sorted({r for r in (2, 5, 10, 20, 30, 50, 60, rounds) if 1 <= r <= rounds})
 
 
-def training_command(data, dest, scope, method, rounds, local_epochs, smoke=False):
+def training_command(data, dest, scope, method, rounds, local_epochs, smoke=False, performance=None):
     if scope not in ('lora-only', 'language-only') or method not in ('fedavg', 'fedlc') or min(rounds, local_epochs) < 1:
         raise ValueError('Invalid federated training configuration')
     cmd = [sys.executable, '-u', 'job.py', '--task', 'subtype', '--adapter_scope', scope,
@@ -44,6 +47,12 @@ def training_command(data, dest, scope, method, rounds, local_epochs, smoke=Fals
            '--save_global_rounds'] + [str(r) for r in ([1] if smoke else saved_rounds(rounds))]
     if smoke:
         cmd += ['--max_steps', '1']
+    if performance is not None:
+        groups, threads = client_gpu_plan(performance.gpus)
+        for flag, value in [('--gpu', groups), ('--sim_threads', str(threads)),
+                            ('--per_device_train_batch_size', str(performance.per_device_train_batch_size))]:
+            cmd[cmd.index(flag)+1] = value
+        cmd += ['--effective_batch_size', str(performance.effective_batch_size)] + performance_cli(performance)
     return cmd
 
 
@@ -88,27 +97,45 @@ def verify_training(dest, scope, data, rounds, local_epochs, smoke=False):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
+    add_performance_args(p)
+    p.add_argument('--gpus', default='0', help='One or more GPU IDs, e.g. 0 or 0,1,2,3 or 0,1,2,3,4,5,6,7')
+    p.add_argument('--effective_batch_size', type=int, default=4, help='Effective batch per FL client, across its GPUs')
+    p.add_argument('--per_device_train_batch_size', type=int, default=1)
     p.add_argument('--data-root', required=True)
     p.add_argument('--scope', required=True, choices=('lora-only', 'language-only'))
     p.add_argument('--rounds', required=True, type=int)
     p.add_argument('--local-epochs', required=True, type=int)
     p.add_argument('--output', required=True)
+    p.add_argument('--validate-only', action='store_true', help='Check CLI/hardware/data without creating a training run')
     a = p.parse_args()
+    groups, threads = client_gpu_plan(a.gpus)
+    for group in parse_client_gpu_groups(groups, 3):
+        accumulation_for_world(a.effective_batch_size, a.per_device_train_batch_size, len(group))
     if min(a.rounds, a.local_epochs) < 1:
         p.error('rounds and local epochs must be positive')
     root, output = Path(a.data_root).resolve(), Path(a.output).resolve()
     inputs = {layout: verify(root / layout) for layout in ('iid', 'skew08')}
     if inputs['iid']['source_split_sha256'] != inputs['skew08']['source_split_sha256']:
         raise ValueError('IID and skew inputs have different cohorts')
+    import torch
+    used_gpus = {g for group in parse_client_gpu_groups(groups, 3) for g in group}
+    if any(g >= torch.cuda.device_count() for g in used_gpus):
+        raise ValueError(f'Requested GPUs {sorted(used_gpus)} exceed {torch.cuda.device_count()} visible GPUs')
+    if a.validate_only:
+        print(f'VALIDATED gpu_groups={groups} effective_batch_per_client={a.effective_batch_size}')
+        return
     output.mkdir(parents=True, exist_ok=False)
     os.environ.update(MEDGEMMA_ATTN_IMPLEMENTATION='sdpa', TOKENIZERS_PARALLELISM='false',
                       WANDB_MODE='disabled', PYTHONHASHSEED=str(SEED))
     write_json(output / 'run_manifest.json', dict(arguments=vars(a), configurations=CONFIGS,
                saved_rounds=saved_rounds(a.rounds), local_epochs_per_patient=a.rounds * a.local_epochs,
                initialization='fresh base model and seeded adapters for every experiment; no centralized checkpoint',
-               training_seed=SEED, learning_rate=5e-5, local_batch_size=1, gradient_accumulation_steps=4,
+               training_seed=SEED, learning_rate=5e-5, local_batch_size=a.per_device_train_batch_size,
+               effective_batch_per_client=a.effective_batch_size, client_gpu_groups=groups,
+               gradient_accumulation_steps_by_site=[accumulation_for_world(a.effective_batch_size,
+                   a.per_device_train_batch_size, len(g)) for g in parse_client_gpu_groups(groups, 3)],
                lora_rank=16, aggregation='record-count-weighted LoRA A/B averaging', fedlc_tau=1.0,
-               gpu_scheduling='cross-process GPU lock for initialization and each local round',
+               gpu_scheduling='per-GPU-group lock; DDP within multi-GPU clients; concurrent disjoint groups',
                scheduler='AdamW and linear learning-rate schedule restart each client round',
                evaluation_split='validation', threshold=.5, test_evaluation_enabled=False,
                input_provenance=inputs, commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
@@ -122,21 +149,25 @@ def main():
         for layout, method in CONFIGS:
             name = f'{layout}_{method}'
             dest = output / 'smoke' / name; dest.mkdir(parents=True)
-            run_stage(training_command(root / layout, dest, a.scope, method, 1, a.local_epochs, True),
+            run_stage(training_command(root / layout, dest, a.scope, method, 1, a.local_epochs, True, a),
                       dest / 'training.log', name + ':smoke', status_path, status)
             write_json(dest / 'verified_training.json', verify_training(dest, a.scope, root / layout, 1, a.local_epochs, True))
             print(f'VERIFIED {name}:smoke — all three clients and global checkpoint checked.', flush=True)
         for layout, method in CONFIGS:
             name = f'{layout}_{method}'
             dest = output / name; dest.mkdir()
-            run_stage(training_command(root / layout, dest, a.scope, method, a.rounds, a.local_epochs),
+            run_stage(training_command(root / layout, dest, a.scope, method, a.rounds, a.local_epochs, performance=a),
                       dest / 'training.log', name + ':train', status_path, status)
             write_json(dest / 'verified_training.json', verify_training(dest, a.scope, root / layout, a.rounds, a.local_epochs))
             print(f'VERIFIED {name}:train — all client rounds and global checkpoints checked.', flush=True)
             for r in saved_rounds(a.rounds):
                 checkpoint = dest / 'global_checkpoints' / f'round-{r:03d}.pt'
                 evaluation = dest / f'validation_round_{r:03d}'
-                cmd = [sys.executable, '-u', 'evaluate_federated_tiles16.py', '--data', str(root / layout),
+                # Candidate evaluation is single-GPU and runs between training jobs.
+                # Restrict it to a requested device rather than implicitly GPU 0.
+                visible = os.environ.get('CUDA_VISIBLE_DEVICES')
+                selected = visible.split(',')[min(used_gpus)] if visible else str(min(used_gpus))
+                cmd = ['env', f'CUDA_VISIBLE_DEVICES={selected}', sys.executable, '-u', 'evaluate_federated_tiles16.py', '--data', str(root / layout),
                        '--checkpoint', str(checkpoint), '--scope', a.scope, '--output', str(evaluation)]
                 run_stage(cmd, dest / f'validation_round_{r:03d}.log', name + f':validation_round_{r}', status_path, status)
                 m = json.loads((evaluation / 'evaluation.json').read_text())['metrics']
