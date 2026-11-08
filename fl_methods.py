@@ -212,7 +212,7 @@ class FLMethodState:
             return scaffold_linear_term(self.params, self.correction)
         return None
 
-    def fedlc_loss(self, unwrapped_model, inputs):
+    def fedlc_loss(self, unwrapped_model, inputs, wrapped_model=None):
         labels = inputs["labels"]
         feats = {k: v for k, v in inputs.items() if k != "labels"}
         first, offset, _ = answer_offsets(labels)
@@ -220,11 +220,17 @@ class FLMethodState:
         backbone, lm_head = base.model, base.lm_head
         device_type = labels.device.type
         with torch.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=device_type == "cuda"):
-            hidden = backbone(**feats, use_cache=False).last_hidden_state[:, offset:, :]
-            logits = lm_head(hidden)
+            if wrapped_model is not None:
+                # DDP must see its own forward call to prepare gradient reduction.
+                # Gemma's forward applies its normal LM head and logit softcap.
+                logits = wrapped_model(**feats, use_cache=False,
+                                       logits_to_keep=labels.shape[1]-offset).logits
+            else:
+                hidden = backbone(**feats, use_cache=False).last_hidden_state[:, offset:, :]
+                logits = lm_head(hidden)
         logits = logits.float()
         cap = getattr(base.config.get_text_config(), "final_logit_softcapping", None)
-        if cap:
+        if cap and wrapped_model is None:
             logits = torch.tanh(logits / cap) * cap
         for i in range(labels.shape[0]):
             pos = int(first[i].item()) - 1 - offset
@@ -253,10 +259,15 @@ class FLMethodState:
                 if state.method != "fedlc":
                     return super().compute_loss(model, inputs, return_outputs=return_outputs,
                                                 num_items_in_batch=num_items_in_batch)
-                loss = state.fedlc_loss(self.accelerator.unwrap_model(model), inputs)
+                loss = state.fedlc_loss(self.accelerator.unwrap_model(model), inputs,
+                                       wrapped_model=model if self.accelerator.num_processes > 1 else None)
                 return (loss, {"loss": loss}) if return_outputs else loss  # dict keeps prediction_step happy
 
         trainer = _MethodTrainer(**kwargs)
+        if self.method == 'fedlc' and trainer.accelerator.num_processes > 1:
+            # This custom loss is a microbatch mean; Trainer must divide by
+            # accumulation steps rather than assume a num_items-normalized loss.
+            trainer.model_accepts_loss_kwargs = False
         if self.method in ("fedprox", "scaffold"):
             trainer.add_callback(_GradTerms())
         return trainer

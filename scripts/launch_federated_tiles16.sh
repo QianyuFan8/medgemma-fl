@@ -6,6 +6,8 @@ fail() { echo "ERROR: $*" >&2; exit 1; }
 SCOPE="${1:?Usage: bash scripts/launch_federated_tiles16.sh language-only|lora-only ROUNDS LOCAL_EPOCHS}"
 ROUNDS="${2:?Specify the number of federated rounds}"
 LOCAL_EPOCHS="${3:?Specify local epochs per round}"
+shift 3
+# Remaining CLI flags configure hardware/performance without changing the queue.
 [[ "$SCOPE" == language-only || "$SCOPE" == lora-only ]] || fail 'Invalid adapter scope'
 [[ "$ROUNDS" =~ ^[1-9][0-9]*$ && "$LOCAL_EPOCHS" =~ ^[1-9][0-9]*$ ]] || fail 'Training budgets must be positive integers'
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -37,16 +39,20 @@ print('Verified both patient-grouped spatial input layouts.')
 PY
 mkdir -p runs
 RUN_ROOT="$REPO_ROOT/runs/federated_tiles16_${SCOPE}_r${ROUNDS}_e${LOCAL_EPOCHS}_$(date +%Y%m%d_%H%M%S)_$$"
+.venv/bin/python run_federated_tiles16.py --data-root "$DATA_ROOT" --scope "$SCOPE" \
+    --rounds "$ROUNDS" --local-epochs "$LOCAL_EPOCHS" --output "$RUN_ROOT/full" --validate-only "$@"
 mkdir "$RUN_ROOT"
 nohup bash -c '
     set +e
-    .venv/bin/python -u run_federated_tiles16.py --data-root "$1" --scope "$2" \
-        --rounds "$3" --local-epochs "$4" --output "$5/full"
+    data_root="$1"; scope="$2"; rounds="$3"; epochs="$4"; run_root="$5"
+    shift 5
+    .venv/bin/python -u run_federated_tiles16.py --data-root "$data_root" --scope "$scope" \
+        --rounds "$rounds" --local-epochs "$epochs" --output "$run_root/full" "$@"
     result=$?
-    printf "%s\n" "$result" > "$5/exit_code"
+    printf "%s\n" "$result" > "$run_root/exit_code"
     printf "QUEUE_EXIT_CODE=%s\n" "$result"
     exit "$result"
-' _ "$DATA_ROOT" "$SCOPE" "$ROUNDS" "$LOCAL_EPOCHS" "$RUN_ROOT" > "$RUN_ROOT/pipeline.log" 2>&1 < /dev/null &
+' _ "$DATA_ROOT" "$SCOPE" "$ROUNDS" "$LOCAL_EPOCHS" "$RUN_ROOT" "$@" > "$RUN_ROOT/pipeline.log" 2>&1 < /dev/null &
 printf '%s\n' "$!" > "$RUN_ROOT/pipeline.pid"
 printf '%s\n' "$RUN_ROOT" > .federated_tiles16.latest
 printf 'Started four-model queue. Scope: %s; rounds: %s; local epochs: %s\n' "$SCOPE" "$ROUNDS" "$LOCAL_EPOCHS"

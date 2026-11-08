@@ -144,13 +144,16 @@ def create_peft_medgemma_model(
     lora_rank: int = DEFAULT_LORA_R,
     adapter_scope: str = "legacy",
     attn_implementation: str | None = None,
+    gradient_checkpointing: bool = True,
 ):
     from peft import get_peft_model, prepare_model_for_kbit_training
 
     base_model = load_medgemma_base_model(model_name_or_path, quantized=quantized, device_map=device_map,
                                           attn_implementation=attn_implementation)
     if quantized:
-        base_model = prepare_model_for_kbit_training(base_model)
+        base_model = prepare_model_for_kbit_training(
+            base_model, use_gradient_checkpointing=gradient_checkpointing,
+            gradient_checkpointing_kwargs={"use_reentrant": False})
     model = get_peft_model(base_model, create_lora_config(lora_rank=lora_rank, adapter_scope=adapter_scope))
     trainable_summary(model, adapter_scope)  # Fail before training if the requested scope is violated.
     return model

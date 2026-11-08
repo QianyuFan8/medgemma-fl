@@ -21,6 +21,10 @@ import argparse
 import os
 import re
 import shlex
+import sys
+from copy import copy
+from training_performance import (add_performance_args, parse_client_gpu_groups,
+                                  accumulation_for_world)
 
 from custom_aggregators import HLoRAMaxRankAggregator, NaiveMaxRankAggregator
 from data_utils import DEFAULT_MODEL_NAME_OR_PATH
@@ -31,6 +35,9 @@ from nvflare.recipe import SimEnv, add_experiment_tracking
 
 def define_parser():
     parser = argparse.ArgumentParser(description="Federated MedGemma QLoRA fine-tuning with FedAvg.")
+    add_performance_args(parser)
+    parser.add_argument('--effective_batch_size', type=int, default=None,
+                        help='Keep this effective batch per client by adjusting accumulation for its GPU count.')
     parser.add_argument("--task", choices=("histology", "methylation", "subtype"), default="histology")
     parser.add_argument("--max_seq_length", type=int, default=4096)
     parser.add_argument(
@@ -52,7 +59,7 @@ def define_parser():
         "--sim_threads",
         type=int,
         default=None,
-        help="Simulator control threads; external training processes need --client_gpu_lock to share one GPU.",
+        help="Simulator control threads; GPU group locks serialize clients sharing devices.",
     )
     parser.add_argument("--client_gpu_lock", default=None,
                         help="Shared absolute GPU lock file for persistent external clients.")
@@ -62,7 +69,7 @@ def define_parser():
         "--gpu",
         type=str,
         default=None,
-        help='GPU IDs per client, e.g. "[0],[1],[2]". When omitted, one GPU is assigned per client automatically.',
+        help='GPU groups per client, e.g. "[0,1],[2],[3]". Multi-GPU groups use torchrun/DDP.',
     )
     parser.add_argument("--data_dir", type=str, default="./data", help="Root directory containing site-1, site-2, ...")
     parser.add_argument(
@@ -239,6 +246,7 @@ def _parse_site_lora_ranks(site_lora_ranks: str | None, n_clients: int, global_l
 
 
 def _build_train_args(args, site_data_path: str, image_root: str, report_to: str, local_lora_rank: int) -> str:
+    from training_performance import performance_cli
     train_args = [
         "--adapter_scope", getattr(args, "adapter_scope", "legacy"),
         "--task", args.task,
@@ -282,13 +290,41 @@ def _build_train_args(args, site_data_path: str, image_root: str, report_to: str
             report_to,
         ]
     )
+    train_args.extend(performance_cli(args))
     return shlex.join(train_args)
+
+
+def gpu_site_settings(args, client_names):
+    """Plan independent torchrun groups before creating any FLARE processes."""
+    value = args.gpu if args.gpu is not None else ','.join(f'[{i}]' for i in range(len(client_names)))
+    groups = parse_client_gpu_groups(value, len(client_names))
+    unique = {tuple(g) for g in groups}
+    result = {}
+    for site, group in zip(client_names, groups):
+        site_args = copy(args)
+        if args.effective_batch_size is not None:
+            site_args.gradient_accumulation_steps = accumulation_for_world(
+                args.effective_batch_size, args.per_device_train_batch_size, len(group))
+        shared = sum(g == group for g in groups) > 1
+        lock = args.client_gpu_lock
+        if shared and not lock:
+            lock = os.path.join(os.path.abspath(args.workspace), 'client_gpu.lock')
+        if lock and len(unique) > 1:
+            lock += '.gpu-' + '-'.join(map(str, group))
+        site_args.client_gpu_lock = lock
+        command = shlex.join([sys.executable, '-u'])
+        if len(group) > 1:
+            command = shlex.join([sys.executable, '-m', 'torch.distributed.run', '--standalone',
+                                  '--nnodes=1', f'--nproc_per_node={len(group)}'])
+        result[site] = (site_args, command)
+    return value, result
 
 
 def main():
     args = define_parser()
     n_clients = args.n_clients
     client_names = [f"site-{idx}" for idx in range(1, n_clients + 1)]
+    gpu_config, site_settings = gpu_site_settings(args, client_names)
     data_dir = os.path.abspath(args.data_dir)
     image_root = os.path.abspath(args.image_root)
     if args.task in ("methylation", "subtype"):
@@ -317,13 +353,13 @@ def main():
     for site_name, local_lora_rank in zip(client_names, site_lora_ranks):
         site_data_path = os.path.join(data_dir, site_name)
         train_args = _build_train_args(
-            args,
+            site_settings[site_name][0],
             site_data_path=site_data_path,
             image_root=image_root,
             report_to=report_to,
             local_lora_rank=local_lora_rank,
         )
-        per_site_config[site_name] = {"train_args": train_args}
+        per_site_config[site_name] = {"train_args": train_args, "command": site_settings[site_name][1]}
 
     model = {
         "class_path": "model.MedGemmaLoRAModel",
@@ -371,17 +407,6 @@ def main():
                 "mode": "online",
             },
         )
-
-    if args.gpu is not None:
-        gpu_groups = _parse_gpu_string(args.gpu)
-        if len(gpu_groups) != n_clients:
-            raise ValueError(
-                f"--gpu has {len(gpu_groups)} group(s) but --n_clients={n_clients}. "
-                f'Expected one group per client, e.g. "[0],[1],[2]".'
-            )
-        gpu_config = args.gpu
-    else:
-        gpu_config = ",".join(f"[{idx}]" for idx in range(n_clients))
 
     if args.attn_implementation:
         # The server-side persistor model and any child process read this too.
