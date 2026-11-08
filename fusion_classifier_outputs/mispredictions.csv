@@ -1,8 +1,8 @@
-error,Sample ID,Comp Bio ID,UID.Subject,Sentrix_ID,Subtype Use For Clustering,Final Fusion Status,fold,predicted_pos_probability,predicted_fusion_status,PAX3 Fusion,PAX7 Fusion,FKHR/FOXO1 FISH,Subtype,Site,Age At Collection (yr),Age At Dx,Sex,Clinical Presentation,Notes 1
-false negative,RMS_381,SJRHB031320_D2,SJHBNHK2N,206382220036_R08C01,ARMS,POS,0,0.16870442237776434,NEG,NEG,POS,*POS,ARMS,Abdomen (P),17.0,,M,17 yr M with metastatic ARMS for resection of abdominal tumor,
-false negative,RMS_185,SJRHB031243_D1,SJHBNVG9C,204424030007_R06C01,ARMS,POS,0,0.22068876718180003,NEG,*POS,*NEG,,ARMS,Bone Marrow (M),12.0,,F,12 yr with mediastinal chest mass and bony metastases for bone marrow biopsy,ClinGen
-false negative,RMS_399,SJRHB077263_D1,SJHBVYQ5V,206359150015_R01C01,ARMS,POS,2,5.6569635096722645e-06,NEG,,,POS,ARMS,Lymph Node (M),14.0,,M,14 yr M with peritoneal mass for inguinal lymph node biopsy,
-false positive,RMS_155,SJRHB071787_D1,SJHBBYGP6,201492570224_R01C01,ARMS,NEG,4,0.9881635464593543,POS,*NEG,NEG,POS,ARMS,Testicle (P),1.83333333333333,,M,22 mth M with testicular mass for resection,
-false positive,RMS_569,SJRHB071787_R1,SJHBBYGP6,206537460080_R07C01,ARMS,NEG,4,0.9929472674232718,POS,NEG,NEG,,ARMS,Groin (M),3.0,,M,3 yr M with hx of paratesticular RMS with groin mass for biopsy,
-false positive,RMS_178,SJRHB031519_D1,SJHBQVKPK,204596820107_R03C01,ERMS,NEG,0,0.5499213338389538,POS,NEG,NEG,NEG,ERMS,Lymph Node (M),2.0,,M,2 yr M with axillary mass for biopsy,ClinGen
-false positive,RMS_369,SJRHB077185_D1,SJHBVYQH7,206144080128_R07C01,ERMS,NEG,4,0.5227823330370299,POS,,,NEG,ERMS,Retroperitoneal (P),5.0,,F,5 yr F with retroperitoneal mass for biopsy,
+error,Sample ID,Comp Bio ID,Sentrix_ID,Subtype Use For Clustering,Final Fusion Status,fold,predicted_pos_probability,predicted_fusion_status,PAX3 Fusion,PAX7 Fusion,FKHR/FOXO1 FISH,Subtype,Site,Age At Collection (yr),Age At Dx,Sex,Clinical Presentation,Notes 1
+false negative,RMS_381,SJRHB031320_D2,206382220036_R08C01,ARMS,POS,0,0.168704422,NEG,NEG,POS,*POS,ARMS,Abdomen (P),17,,M,17 yr M with metastatic ARMS for resection of abdominal tumor,
+false negative,RMS_185,SJRHB031243_D1,204424030007_R06C01,ARMS,POS,0,0.220688767,NEG,*POS,*NEG,,ARMS,Bone Marrow (M),12,,F,12 yr with mediastinal chest mass and bony metastases for bone marrow biopsy,ClinGen
+false negative,RMS_399,SJRHB077263_D1,206359150015_R01C01,ARMS,POS,2,5.66E-06,NEG,,,POS,ARMS,Lymph Node (M),14,,M,14 yr M with peritoneal mass for inguinal lymph node biopsy,
+false positive,RMS_155,SJRHB071787_D1,201492570224_R01C01,ARMS,NEG,4,0.988163546,POS,*NEG,NEG,POS,ARMS,Testicle (P),1.833333333,,M,22 mth M with testicular mass for resection,
+false positive,RMS_569,SJRHB071787_R1,206537460080_R07C01,ARMS,NEG,4,0.992947267,POS,NEG,NEG,,ARMS,Groin (M),3,,M,3 yr M with hx of paratesticular RMS with groin mass for biopsy,
+false positive,RMS_178,SJRHB031519_D1,204596820107_R03C01,ERMS,NEG,0,0.549921334,POS,NEG,NEG,NEG,ERMS,Lymph Node (M),2,,M,2 yr M with axillary mass for biopsy,ClinGen
+false positive,RMS_369,SJRHB077185_D1,206144080128_R07C01,ERMS,NEG,4,0.522782333,POS,,,NEG,ERMS,Retroperitoneal (P),5,,F,5 yr F with retroperitoneal mass for biopsy,
