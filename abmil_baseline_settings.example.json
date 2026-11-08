@@ -1,0 +1,7 @@
+{
+  "settings": [
+    {"name": "A H-optimus-1 + ABMIL", "kind": "abmil", "path": "runs/comparison/A_hoptimus1/abmil/slide_scores.tsv"},
+    {"name": "B EmbeddingGemma 2 + ABMIL", "kind": "abmil", "path": "runs/comparison/B_embeddinggemma2/abmil/slide_scores.tsv"},
+    {"name": "C H-optimus-1 + EmbeddingGemma 2 + ABMIL", "kind": "abmil", "path": "runs/comparison/C_combined/abmil/slide_scores.tsv"}
+  ]
+}

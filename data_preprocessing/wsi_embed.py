@@ -92,20 +92,8 @@ def load_encoder(model_name, device, norm="bioptimus"):
     from torchvision import transforms
 
     if "embeddinggemma" in model_name.lower():
-        from transformers import AutoModel, AutoProcessor
-
-        # EmbeddingGemma has its own image processor and should not use the
-        # H-optimus/ImageNet normalization below.  Its model card recommends
-        # bf16 or fp32 (not fp16) for image embeddings.
-        dtype = torch.bfloat16 if device.type == "cuda" and torch.cuda.is_bf16_supported() else torch.float32
-        processor = AutoProcessor.from_pretrained(model_name)
-        model = AutoModel.from_pretrained(model_name, torch_dtype=dtype).eval().to(device)
-        with torch.inference_mode():
-            probe = processor(images=[Image.new("RGB", (224, 224))], return_tensors="pt")
-            probe = {k: v.to(device) for k, v in probe.items() if hasattr(v, "to")}
-            outputs = model(**probe)
-            probe_features = _embeddinggemma_image_features(model, outputs)
-        return model, processor, int(probe_features.shape[-1]), "embeddinggemma", dtype
+        encoder = EmbeddingGemmaImageEncoder(model_name, device)
+        return encoder.model, encoder, encoder.dim, "embeddinggemma", encoder.dtype
 
     kwargs = {"init_values": 1e-5, "dynamic_img_size": False} if "bioptimus" in model_name else {}
     model = timm.create_model(model_name, pretrained=True, num_classes=0, **kwargs)
@@ -117,21 +105,62 @@ def load_encoder(model_name, device, norm="bioptimus"):
     return model, transform, int(dim), "timm", torch.float16
 
 
-def _embeddinggemma_image_features(model, outputs):
-    """Extract the pooled 768-d image embedding across Transformers versions."""
-    for name in ("image_embeds", "image_embeddings", "pooler_output"):
-        value = getattr(outputs, name, None)
-        if value is not None and getattr(value, "ndim", 0) == 2:
-            return value
-    if hasattr(model, "get_image_features"):
-        value = model.get_image_features(**outputs)
-        if getattr(value, "ndim", 0) == 2:
-            return value
-    if isinstance(outputs, dict):
-        for value in outputs.values():
-            if getattr(value, "ndim", 0) == 2 and value.shape[-1] in (128, 256, 512, 768):
-                return value
-    raise RuntimeError("Could not locate EmbeddingGemma image embeddings in Transformers output")
+EMBEDDINGGEMMA_DIM = 768
+
+
+class EmbeddingGemmaImageEncoder:
+    """Official EmbeddingGemma 2 image embeddings via SentenceTransformer.encode.
+
+    The model card defines the 768-d embedding through the Sentence Transformers
+    pipeline (token states -> mean pooling -> 512->768 projection). A bare
+    transformers AutoModel skips those modules, so its outputs are not the
+    documented embedding. Tiles are passed as PIL images with no prompt, as the
+    card instructs for image inputs, and the model's own processor handles
+    resizing and normalization (no H-optimus/ImageNet normalization here).
+    """
+
+    def __init__(self, model_name, device):
+        import torch
+        from sentence_transformers import SentenceTransformer, __version__ as st_version
+
+        # The card warns that float16 returns NaN or silently degraded embeddings;
+        # use bf16 where the GPU supports it, otherwise fp32.
+        self.dtype = torch.bfloat16 if device.type == "cuda" and torch.cuda.is_bf16_supported() else torch.float32
+        # audio_config=None drops the audio encoder (the card's text+image loading, ~440M effective).
+        self.model = SentenceTransformer(model_name, device=str(device), model_kwargs={"torch_dtype": self.dtype},
+                                         config_kwargs={"audio_config": None})
+        self.model.eval()
+        probe = [Image.new("RGB", (224, 224)), Image.new("RGB", (224, 224), "white")]
+        # Releases differ in how a bare image is passed; pick the form that works
+        # once, on the probe, and use it for every tile so all slides match.
+        self.input_style, errors = None, []
+        for style in ("pil", "dict"):
+            try:
+                values = self._encode(probe, style)
+            except (TypeError, ValueError, KeyError, AttributeError) as error:
+                errors.append(f"{style}: {error}")
+                continue
+            self.input_style = style
+            break
+        if self.input_style is None:
+            raise RuntimeError("SentenceTransformer.encode rejected PIL image inputs: " + "; ".join(errors))
+        self.dim = int(values.shape[-1])
+        self.provenance = dict(embedding_api="sentence_transformers.encode", sentence_transformers_version=st_version,
+                               image_input_style=self.input_style, normalize_embeddings=True, dtype=str(self.dtype))
+
+    def _encode(self, images, style):
+        inputs = list(images) if style == "pil" else [{"image": image} for image in images]
+        values = self.model.encode(inputs, batch_size=len(inputs), convert_to_numpy=True,
+                                   normalize_embeddings=True, show_progress_bar=False)
+        values = np.asarray(values, dtype=np.float32)
+        if values.shape != (len(images), EMBEDDINGGEMMA_DIM):
+            raise ValueError(f"expected [{len(images)}, {EMBEDDINGGEMMA_DIM}] embeddings, got {list(values.shape)}")
+        if not np.isfinite(values).all():
+            raise RuntimeError("EmbeddingGemma returned non-finite embeddings; check the dtype (never float16)")
+        return values
+
+    def __call__(self, images):
+        return self._encode(images, self.input_style)
 
 
 def embed_slide(slide_path, out_path, model, transform, dim, args, device, encoder_kind):
@@ -161,20 +190,20 @@ def embed_slide(slide_path, out_path, model, transform, dim, args, device, encod
     with torch.inference_mode():
         for batch, idx in loader:
             if encoder_kind == "embeddinggemma":
-                inputs = transform(images=batch, return_tensors="pt")
-                inputs = {k: v.to(device) for k, v in inputs.items() if hasattr(v, "to")}
-                outputs = model(**inputs)
-                values = _embeddinggemma_image_features(model, outputs)
+                values = transform(batch)  # numpy [B, 768], L2-normalized
             else:
                 with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=device.type == "cuda"):
                     values = model(batch.to(device))
-            feats[idx.numpy()] = values.float().cpu().numpy()
+            if encoder_kind != "embeddinggemma":
+                values = values.float().cpu().numpy()
+            feats[np.asarray(idx)] = values
     with h5py.File(out_path, "w") as f:
         f.create_dataset("feats", data=feats)
         f.create_dataset("coords", data=coords)
         f.attrs.update(dict(tile_level0=tile_level0, mpp0=mpp0, target_mpp=args.target_mpp, tile=args.tile,
                             model=args.model, norm=args.norm, encoder_kind=encoder_kind,
-                            feature_dim=dim, slide=str(slide_path.resolve())))
+                            feature_dim=dim, slide=str(slide_path.resolve()),
+                            **getattr(transform, "provenance", {})))
     return len(coords), tile_level0, mpp0
 
 
@@ -211,7 +240,10 @@ def main():
         missing = wanted - {s.stem for s in slides}
         if missing:
             raise FileNotFoundError(f"Slides not found: {sorted(missing)}")
-    if args.norm is None:
+    if "embeddinggemma" in args.model.lower():
+        # EmbeddingGemma's own processor resizes and normalizes; --norm does not apply.
+        args.norm = "embeddinggemma_processor"
+    elif args.norm is None:
         args.norm = "bioptimus" if "bioptimus" in args.model else "imagenet"
     model, transform, dim, encoder_kind, dtype = load_encoder(args.model, device, args.norm)
     print(f"encoder {args.model}: {dim}-d features, {args.norm} normalization")
