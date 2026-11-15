@@ -6,6 +6,7 @@ CRC-VAL-*
 
 # COMET patient data: methylation matrices, metadata, and whole-slide images
 /COMET_RMS_Data/
+/TARGET_methyl/
 
 # prepared data
 data/.DS_Store
