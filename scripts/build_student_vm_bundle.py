@@ -6,6 +6,8 @@ import argparse
 import hashlib
 import io
 import json
+import re
+import subprocess
 from pathlib import Path
 import tarfile
 
@@ -17,42 +19,69 @@ def digest(path):
     return h.hexdigest()
 
 
+def tracked_sources(repo):
+    """Do not resurrect ignored local notes, secrets, data, or old launchers."""
+    names = subprocess.check_output(['git', 'ls-files', '-z'], cwd=repo).decode().split('\0')
+    docs = {'.md', '.mdx', '.markdown', '.rst', '.txt', '.html', '.htm', '.adoc'}
+    han = re.compile(r'[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U0002fa1f]')
+    paths = []
+    for name in names:
+        if not name:
+            continue
+        path = repo / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError('Invalid source file: ' + name)
+        if path.suffix.lower() in docs:
+            if han.search(path.read_text()) or re.search(r'(?:^|[_.-])zh(?:[_.-]|$)', path.name, re.I):
+                raise ValueError('Non-English source document: ' + name)
+        paths.append((path, 'repo/' + name))
+    return paths
+
+
 def main():
     repo=Path(__file__).resolve().parents[1]
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--capstone-root',type=Path,default=repo.parent)
     p.add_argument('--output',type=Path,required=True)
     a=p.parse_args();base=a.capstone_root.resolve();out=a.output.resolve()
-    archive=out/'medgemma_student_vm_20261117_v3.tar.gz'
+    archive=out/'medgemma_student_vm_20261117_v4.tar.gz'
     if archive.exists():raise FileExistsError('Use a new output directory: '+str(archive))
     files={}
     def add(path,name):
         if not path.is_file():raise FileNotFoundError(path)
         if name in files:raise ValueError('Duplicate bundle path: '+name)
         files[name]=path
-    for name in ('README.md','LICENSE','pyproject.toml','requirements.txt','requirements-vm.txt','requirements-wsi.txt'):
-        add(repo/name,'repo/'+name)
-    for dirname in ('src','train','inference','experiments','data_preprocessing','scripts','tests','pipelines','methylation'):
-        for file in sorted((repo/dirname).rglob('*')):
-            rel=file.relative_to(repo)
-            if (file.is_file() and not any(part.startswith('.') or part=='__pycache__' for part in rel.parts)
-                and 'site-packages' not in rel.parts and file.suffix in {'.py','.sh','.R','.md','.toml','.yml','.txt'}):
-                add(file,'repo/'+rel.as_posix())
-    for name in ('REPOSITORY_GUIDE.md','TRAINING_PERFORMANCE.md','entrypoint_migration.json'):
-        add(repo/'docs'/name,'repo/docs/'+name)
+    dirty=subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],cwd=repo)
+    if dirty.strip():raise ValueError('Commit tracked source changes before building a release bundle')
+    revision=subprocess.check_output(['git','rev-parse','HEAD'],cwd=repo).decode().strip()
+    for path,name in tracked_sources(repo):add(path,name)
     for name in ('student_train.csv','silver_labels.csv','image_input_manifest.csv','paired_selected_cpg_beta_imputed.csv','panel_provenance.json'):
         add(base/'return_results/silver'/name,'inputs/returned/silver/'+name)
     for name in ('teacher_selection.json','limma/teacher/selected_cpgs.txt'):
         add(base/'return_results'/name,'inputs/returned/'+name)
     add(base/'outputs/silver_labels_20261117/cohort_v4/patients.csv','inputs/cohort/patients.csv')
-    add(base/'outputs/fusion_vm_849_20261027/README.md','provenance/archived_feature_commands_20261027.md')
+    # Preserve the actual historical encoder command without copying local Chinese notes.
+    archived=base/'outputs/fusion_vm_849_20261027/README.md'
+    lines=archived.read_text().splitlines()
+    start=next(i for i,line in enumerate(lines) if line.startswith('python data_preprocessing/wsi_embed.py '))
+    command=[]
+    for line in lines[start:]:
+        command.append(line)
+        if not line.rstrip().endswith(chr(92)):break
+    out.mkdir(parents=True,exist_ok=True)
+    excerpt=out/'archived_feature_commands_20261027.md'
+    excerpt.write_text('# Archived H-Optimus-1 command (2026-10-27)\n\n'
+        'Historical provenance only; use START_HERE.md for the current run.\n\n'
+        'Source document SHA-256: '+digest(archived)+'\n\n```bash\n'
+        +'\n'.join(command)+'\n```\n')
+    add(excerpt,'provenance/archived_feature_commands_20261027.md')
     add(base/'outputs/medgemma_student_v4_20261117/STATUS.json','provenance/preparation_status.json')
     add(repo/'pipelines/medgemma_student/VM_DNANEXUS.md','START_HERE.md')
     plan=json.loads((base/'outputs/medgemma_student_v4_20261117/plan/plan.json').read_text())
     features=[r for r in plan['rows'] if r['feature_file']]
     if len(features)!=48 or len(plan['rows'])!=131:raise ValueError('Frozen cohort/cache count changed')
     for row in features:add(Path(row['feature_file']),'features/hoptimus1/'+row['slide_id']+'.h5')
-    manifest={'schema':2,'code_layout':'installed medgemma_fl package with train/inference entrypoints',
+    manifest={'schema':3,'bundle_version':'v4','source_revision':revision,'source_files':len([n for n in files if n.startswith('repo/')]),'code_layout':'installed medgemma_fl package with train/inference entrypoints',
               'prepared_date':'2026-11-17','cached_feature_count':48,'missing_feature_count':83,
               'required_wsi_count':131,'gpu_tested':False,
               'sha256':{name:digest(file) for name,file in sorted(files.items())}}

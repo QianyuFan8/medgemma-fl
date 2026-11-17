@@ -1,6 +1,6 @@
 # DNAnexus → spatial16 → gold/silver student: VM runbook
 
-Prepared 2026-11-17. Use the portable `medgemma_student_vm_20261117_v3.tar.gz` bundle; it contains the prepared source-code snapshot, frozen inputs, and 48 reusable H-Optimus-1 feature bags. It contains patient-linked research data; transfer only to your authorized research VM. No credentials are included.
+Prepared 2026-11-17. Use the portable `medgemma_student_vm_20261117_v4.tar.gz` bundle; it contains the prepared source-code snapshot, frozen inputs, and 48 reusable H-Optimus-1 feature bags. It contains patient-linked research data; transfer only to your authorized research VM. No credentials are included.
 
 ## What is ready, and what still needs a VM
 
@@ -10,7 +10,7 @@ Prepared 2026-11-17. Use the portable `medgemma_student_vm_20261117_v3.tar.gz` b
 - Existing frozen features cover 48 of 131 required slides; 83 must be encoded. All 131 original WSI are needed to extract newly selected tiles, including the 48 slides whose features are cached.
 - The Nov16 historical DNAnexus inventory contains all 131 filenames. The Oct26 size inventory estimates **226.9 GiB**. These are historical observations, not a fresh cloud verification. The local DX token has expired and the browser is logged out. The VM will authenticate and freeze current file IDs/sizes before downloading.
 - Project: `project-JBXfX9Q0vQQYJ9k4BxGVyYzJ`, folder: `/COMET_RMS`.
-- Use at least a **500 GB working disk**, preferably 32+ vCPUs and 128 GB RAM for four concurrent image workers. For the requested scaling test use four identical A100 GPUs (80 GB preferred; actual memory use still requires the short run). A one-GPU VM also supports preparation and the one-GPU test.
+- Use a **1 TB SSD** (500 GB minimum working disk), preferably 32+ vCPUs and 128 GB RAM for four concurrent image workers. For the requested scaling test use four identical A100 GPUs (80 GB preferred; actual memory use still requires the short run). A one-GPU VM also supports preparation and the one-GPU test.
 - No real 91-patient ABMIL run, CUDA MedGemma run, or four-GPU speed measurement has been completed in this preparation step.
 
 ## 1. Upload and unpack the bundle
@@ -18,10 +18,12 @@ Prepared 2026-11-17. Use the portable `medgemma_student_vm_20261117_v3.tar.gz` b
 Upload the `.tar.gz` and its `.sha256` file to the VM, then run in that directory:
 
 ```bash
-sha256sum -c medgemma_student_vm_20261117_v3.tar.gz.sha256
-tar -xzf medgemma_student_vm_20261117_v3.tar.gz
+sha256sum -c medgemma_student_vm_20261117_v4.tar.gz.sha256
+tar -xzf medgemma_student_vm_20261117_v4.tar.gz
 cd medgemma_student_vm/repo
 ```
+
+This v4 bundle includes only Git-tracked source files and English documentation, plus explicitly listed private research inputs. The manifest records the source commit and SHA-256 for every payload file. Use a fresh extraction directory; do not overlay v2/v3.
 
 This bundle includes a source-code snapshot. Source updates are maintained on the `comet-fusion-pos-neg` branch; Git does not include the private inputs or feature bags.
 
@@ -104,4 +106,4 @@ Output paths must be new; use a new suffix if retrying a failed benchmark. For l
 
 Return `prepare.log`, `cloud_files.json`, `complete_plan/summary.json`, `abmil/selector.json`, `tiles/tiles.json`, `medgemma_inputs/student_inputs.json`, `benchmark_comparison.json`, and both benchmark directories' `run_manifest.json`, `completed.json`, `rank-*_timing.json`, `rank-*_performance.json` and `.log` files. No raw WSI transfer back is needed for this check.
 
-After the real GPU tests pass, choose the device count for the full 60-epoch training. The existing README contains the full-run command and checkpoint schedule; it is not started automatically by this preparation script.
+After the real GPU tests pass, choose the device count for the full 60-epoch training. [README_EN.md](README_EN.md) contains the full-run command and checkpoint schedule; it is not started automatically by this preparation script.
