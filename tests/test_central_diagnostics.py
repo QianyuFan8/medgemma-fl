@@ -7,11 +7,11 @@ import unittest
 from unittest.mock import patch
 
 from PIL import Image
-from evaluate_subtype import evaluation_reference, patient_score_metrics
-from methylation_utils import panel_fingerprint
-from prepare_comet_subtype import write_tsv
-from prepare_central_diagnostics import make_plan, prepare, select_tiny_records
-from run_central_diagnostics import train_command, verify_training, evaluation_command, run_experiment
+from medgemma_fl.evaluation.evaluate_subtype import evaluation_reference, patient_score_metrics
+from medgemma_fl.methylation_utils import panel_fingerprint
+from medgemma_fl.preprocessing.prepare_comet_subtype import write_tsv
+from medgemma_fl.preprocessing.prepare_central_diagnostics import make_plan, prepare, select_tiny_records
+from medgemma_fl.experiments.run_central_diagnostics import train_command, verify_training, evaluation_command, run_experiment
 from scripts.check_fusion_splits import inspect, inspect_clients
 from test_training_args import load_builder
 from types import SimpleNamespace
@@ -131,8 +131,8 @@ class DiagnosticsTests(unittest.TestCase):
             dest = Path(td)
             workspace = dest / 'train'; workspace.mkdir()
             # Reproduce the old failure before any GPU/model import occurs.
-            from evaluate_subtype import main as evaluate_main
-            with patch('sys.argv', ['evaluate_subtype.py', 'medgemma', '--data-dir', str(dest),
+            from medgemma_fl.evaluation.evaluate_subtype import main as evaluate_main
+            with patch('sys.argv', ['inference/medgemma.py', 'medgemma', '--data-dir', str(dest),
                                     '--output', str(workspace), '--split', 'train']):
                 with self.assertRaises(FileExistsError):
                     evaluate_main()
@@ -155,13 +155,13 @@ class DiagnosticsTests(unittest.TestCase):
             ex = make_plan()[0]; calls = []
             def fake_stage(cmd, log, stage, status_path, status):
                 calls.append(cmd)
-                self.assertEqual(cmd[2], 'evaluate_subtype.py')
+                self.assertEqual(cmd[2], 'inference/medgemma.py')
                 out = Path(cmd[cmd.index('--output') + 1]); out.mkdir()
                 (out / 'evaluation.json').write_text(json.dumps({
                     'split': 'train', 'arguments': {'model_path': str(checkpoint), 'data_dir': 'data/tiny'}}))
                 (out / 'predictions.csv').write_text('patient_id,truth,score_POS\n')
                 log.write_text('evaluation completed')
-            with patch('run_central_diagnostics.run_stage', side_effect=fake_stage):
+            with patch('medgemma_fl.experiments.run_central_diagnostics.run_stage', side_effect=fake_stage):
                 run_experiment(ex, Path('data/tiny'), dest, 42, False, True, root/'status.json', {})
                 run_experiment(ex, Path('data/tiny'), dest, 42, False, True, root/'status.json', {})
             self.assertEqual(len(calls), 1)
@@ -172,7 +172,7 @@ class DiagnosticsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td); dest = root/'01_tiny_fit'
             (dest/'train').mkdir(parents=True)
-            with patch('run_central_diagnostics.run_stage') as stage:
+            with patch('medgemma_fl.experiments.run_central_diagnostics.run_stage') as stage:
                 with self.assertRaisesRegex(RuntimeError, 'refusing overwrite'):
                     run_experiment(make_plan()[0], Path('data/tiny'), dest, 42, False, True, root/'status.json', {})
                 stage.assert_not_called()

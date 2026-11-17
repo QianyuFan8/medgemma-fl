@@ -30,7 +30,7 @@ RUN_ROOT="$REPO_ROOT/runs/multimodal_tiles60_${ARM}_$(date +%Y%m%d_%H%M%S)_$$"
 mkdir "$RUN_ROOT"
 nohup bash -c '
     set +e
-    .venv/bin/python -u run_multimodal_tiles60.py --data-root "$1" --output "$2/full" --arm "$3"
+    .venv/bin/python -u experiments/run_multimodal_tiles60.py --data-root "$1" --output "$2/full" --arm "$3"
     result=$?
     printf "%s\n" "$result" > "$2/exit_code"
     printf "QUEUE_EXIT_CODE=%s\n" "$result"

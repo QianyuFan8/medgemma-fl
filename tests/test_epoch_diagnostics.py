@@ -8,19 +8,19 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from run_epoch_diagnostics import EPOCHS, experiments, snapshot
-from run_epoch_diagnostics import main as run_main
-from run_central_diagnostics import train_command, evaluation_command
+from medgemma_fl.experiments.run_epoch_diagnostics import EPOCHS, experiments, snapshot
+from medgemma_fl.experiments.run_epoch_diagnostics import main as run_main
+from medgemma_fl.experiments.run_central_diagnostics import train_command, evaluation_command
 
 
 REPO = Path(__file__).resolve().parents[1]
 
 
 def callback_class():
-    tree = ast.parse((REPO / 'client.py').read_text())
+    tree = ast.parse((REPO / 'src/medgemma_fl/training/client.py').read_text())
     node = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'EpochAdapterCheckpoint')
     ns = {'TrainerCallback': object, 'get_adapter_state_dict': lambda model: {'layer.lora_A.weight': [1, 2]}}
-    exec(compile(ast.Module(body=[node], type_ignores=[]), 'client.py', 'exec'), ns)
+    exec(compile(ast.Module(body=[node], type_ignores=[]), 'src/medgemma_fl/training/client.py', 'exec'), ns)
     return ns['EpochAdapterCheckpoint']
 
 
@@ -33,7 +33,7 @@ class EpochTests(unittest.TestCase):
             calls = []
             def stage(cmd, log, name, status_path, status):
                 calls.append(cmd)
-                if 'job.py' in cmd:
+                if 'train/federated.py' in cmd:
                     ws = Path(cmd[cmd.index('--workspace')+1]); ws.mkdir()
                     (ws / 'training_diagnostics.json').write_text(json.dumps({
                         'epoch': 10, 'global_step': 100, 'training_loss': .01}))
@@ -43,7 +43,7 @@ class EpochTests(unittest.TestCase):
                         cp.with_suffix('.json').write_text(json.dumps({
                             'epoch': e, 'planned_epochs': 10, 'global_step': e*10,
                             'checkpoint_sha256': hashlib.sha256(cp.read_bytes()).hexdigest()}))
-                elif 'evaluate_subtype.py' in cmd:
+                elif 'inference/medgemma.py' in cmd:
                     self.assertIn(cmd[cmd.index('--split')+1], ('train', 'validation'))
                     dest = Path(cmd[cmd.index('--output')+1]); dest.mkdir()
                     (dest / 'evaluation.json').write_text(json.dumps({'metrics': {
@@ -53,10 +53,10 @@ class EpochTests(unittest.TestCase):
                 else:
                     Path(cmd[cmd.index('--output')+1]).write_text('{}')
             with patch('sys.argv', ['runner', '--data-root', str(data), '--output', str(output)]), \
-                 patch('run_epoch_diagnostics.validate_clients'), \
-                 patch('run_epoch_diagnostics.importlib.metadata.version', return_value='test'), \
-                 patch('run_epoch_diagnostics.subprocess.check_output', return_value='test'), \
-                 patch('run_epoch_diagnostics.run_stage', side_effect=stage):
+                 patch('medgemma_fl.experiments.run_epoch_diagnostics.validate_clients'), \
+                 patch('medgemma_fl.experiments.run_epoch_diagnostics.importlib.metadata.version', return_value='test'), \
+                 patch('medgemma_fl.experiments.run_epoch_diagnostics.subprocess.check_output', return_value='test'), \
+                 patch('medgemma_fl.experiments.run_epoch_diagnostics.run_stage', side_effect=stage):
                 run_main()
                 with self.assertRaises(FileExistsError):
                     run_main()
@@ -124,10 +124,10 @@ class EpochTests(unittest.TestCase):
 
     def test_snapshot_argument_reaches_client(self):
         import shlex
-        tree = ast.parse((REPO / 'job.py').read_text())
+        tree = ast.parse((REPO / 'src/medgemma_fl/training/federated.py').read_text())
         node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_build_train_args')
         ns = {'shlex': shlex}
-        exec(compile(ast.Module(body=[node], type_ignores=[]), 'job.py', 'exec'), ns)
+        exec(compile(ast.Module(body=[node], type_ignores=[]), 'src/medgemma_fl/training/federated.py', 'exec'), ns)
         args = SimpleNamespace(task='subtype', max_seq_length=32768, model_name_or_path='model',
                                attn_implementation='sdpa', seed=42, logging_steps=5, eval_steps=10,
                                fl_method='fedavg', max_steps=None, num_train_epochs=10,

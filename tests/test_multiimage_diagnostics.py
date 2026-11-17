@@ -9,9 +9,9 @@ from unittest.mock import patch
 import numpy as np
 from PIL import Image
 
-from prepare_multiimage_diagnostics import convert_record, prepare, signature
-from run_multiimage_diagnostics import training_command, main
-from subtype_utils import make_subtype_record, format_subtype_example, load_example_images
+from medgemma_fl.preprocessing.prepare_multiimage_diagnostics import convert_record, prepare, signature
+from medgemma_fl.experiments.run_multiimage_diagnostics import training_command, main
+from medgemma_fl.subtype_utils import make_subtype_record, format_subtype_example, load_example_images
 
 
 def fixture(root):
@@ -107,7 +107,7 @@ class MultiimageTests(unittest.TestCase):
             language = 'model.language_model.layers.0.q_proj.lora_A.weight'
             def stage(cmd, log, name, *rest):
                 calls.append(cmd)
-                if 'job.py' in cmd:
+                if 'train/federated.py' in cmd:
                     smoke = '--max_steps' in cmd
                     ws = Path(cmd[cmd.index('--workspace') + 1]); ws.mkdir(parents=True)
                     (ws / 'training_diagnostics.json').write_text(json.dumps({'global_step': 1 if smoke else 10, 'epoch': 1 if smoke else 10, 'training_loss': .1}))
@@ -117,7 +117,7 @@ class MultiimageTests(unittest.TestCase):
                         for epoch in (2, 5, 10):
                             cp = folder / f'epoch-{epoch:02d}.pt'; cp.write_bytes(b'fixture')
                             cp.with_suffix('.json').write_text(json.dumps({'epoch': epoch, 'planned_epochs': 10, 'global_step': epoch, 'checkpoint_sha256': hashlib.sha256(cp.read_bytes()).hexdigest()}))
-                elif 'evaluate_subtype.py' in cmd:
+                elif 'inference/medgemma.py' in cmd:
                     self.assertIn('--skip-generation', cmd)
                     self.assertIn(cmd[cmd.index('--split') + 1], ('train', 'validation'))
                     dest = Path(cmd[cmd.index('--output') + 1]); dest.mkdir()
@@ -125,17 +125,17 @@ class MultiimageTests(unittest.TestCase):
                 else:
                     Path(cmd[cmd.index('--output') + 1]).write_text('{}')
             with patch('sys.argv', ['runner', '--data-root', str(data), '--output', str(output), '--baseline', str(root / 'baseline')]), \
-                 patch('run_multiimage_diagnostics.check_baseline', return_value={'snapshot_steps': {'2': 2, '5': 5, '10': 10}}), \
-                 patch('run_multiimage_diagnostics.importlib.metadata.version', return_value='fixture'), \
-                 patch('run_multiimage_diagnostics.subprocess.check_output', return_value='fixture'), \
-                 patch('run_multiimage_diagnostics.processor_preflight'), \
-                 patch('run_multiimage_diagnostics.run_stage', side_effect=stage):
+                 patch('medgemma_fl.experiments.run_multiimage_diagnostics.check_baseline', return_value={'snapshot_steps': {'2': 2, '5': 5, '10': 10}}), \
+                 patch('medgemma_fl.experiments.run_multiimage_diagnostics.importlib.metadata.version', return_value='fixture'), \
+                 patch('medgemma_fl.experiments.run_multiimage_diagnostics.subprocess.check_output', return_value='fixture'), \
+                 patch('medgemma_fl.experiments.run_multiimage_diagnostics.processor_preflight'), \
+                 patch('medgemma_fl.experiments.run_multiimage_diagnostics.run_stage', side_effect=stage):
                 main()
                 with self.assertRaises(FileExistsError): main()
-            jobs = [c for c in calls if 'job.py' in c]
+            jobs = [c for c in calls if 'train/federated.py' in c]
             self.assertEqual(len(jobs), 2)
             self.assertNotEqual(jobs[0][jobs[0].index('--workspace') + 1], jobs[1][jobs[1].index('--workspace') + 1])
-            self.assertEqual(len([c for c in calls if 'evaluate_subtype.py' in c]), 6)
+            self.assertEqual(len([c for c in calls if 'inference/medgemma.py' in c]), 6)
             self.assertEqual(json.loads((output / 'status.json').read_text())['state'], 'completed')
 
 

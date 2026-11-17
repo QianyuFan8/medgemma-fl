@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from summarize_subtype_results import from_log
+from medgemma_fl.evaluation.summarize_subtype_results import from_log
 
 
 class SummaryCostTests(unittest.TestCase):

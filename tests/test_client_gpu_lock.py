@@ -4,7 +4,7 @@ import tempfile
 import time
 import unittest
 
-from client_gpu_lock import client_gpu_slot
+from medgemma_fl.client_gpu_lock import client_gpu_slot
 
 
 def competing_client(path, active, peak, events, barrier):

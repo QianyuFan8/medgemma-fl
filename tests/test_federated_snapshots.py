@@ -7,7 +7,7 @@ import unittest
 try:
     import torch
     from nvflare.app_common.abstract.fl_model import FLModel, ParamsType
-    from federated_snapshots import SnapshotNaiveAggregator
+    from medgemma_fl.federated_snapshots import SnapshotNaiveAggregator
     AVAILABLE=True
 except ImportError:
     AVAILABLE=False
@@ -18,10 +18,10 @@ class SnapshotTests(unittest.TestCase):
     def test_shared_gpu_lock_is_forwarded_to_every_external_client(self):
         import shlex
         from unittest.mock import patch
-        from job import define_parser, _build_train_args
+        from medgemma_fl.training.federated import define_parser, _build_train_args
         with tempfile.TemporaryDirectory(prefix='gpu lock ') as td:
             lock = str(Path(td)/'shared.lock')
-            with patch('sys.argv', ['job.py', '--client_gpu_lock', lock]):
+            with patch('sys.argv', ['train/federated.py', '--client_gpu_lock', lock]):
                 args = define_parser()
             for site in ('site-1', 'site-2', 'site-3'):
                 cmd = shlex.split(_build_train_args(args, f'/data/{site}', '/data', 'none', 16))
@@ -29,13 +29,15 @@ class SnapshotTests(unittest.TestCase):
 
     def test_actual_flare_job_export_serializes_snapshot_configuration(self):
         from nvflare.app_opt.pt.recipes.fedavg import FedAvgRecipe
+        from medgemma_fl.job_packaging import include_runtime_sources
         with tempfile.TemporaryDirectory() as td:
-            script=Path.cwd()/'client.py'
+            script=Path('train/client.py')
             self.assertTrue(script.is_file())
             agg=SnapshotNaiveAggregator(16,str(Path(td)/'snapshots'),[2,5,10,20,30,50,60],3)
             recipe=FedAvgRecipe(name='review',model={'class_path':'torch.nn.Linear','args':{'in_features':1,'out_features':1}},
                 min_clients=3,num_rounds=60,train_script=str(script),aggregator=agg,launch_external_process=True,
                 server_expected_format='pytorch',key_metric='')
+            include_runtime_sources(recipe.job)
             recipe.job.export_job(str(Path(td)/'export'))
             configs=list(Path(td).rglob('config_fed_server.json'))
             self.assertEqual(len(configs),1)
@@ -44,6 +46,13 @@ class SnapshotTests(unittest.TestCase):
             self.assertIn('save_rounds',text)
             self.assertTrue(list(Path(td).rglob('federated_snapshots.py')))
             self.assertTrue(list(Path(td).rglob('client_gpu_lock.py')))
+            self.assertTrue(list(Path(td).glob('export/**/custom/medgemma_fl/training/client.py')))
+            for config in Path(td).rglob('config_fed_client.json'):
+                components=json.loads(config.read_text())['components']
+                launcher=next(c for c in components if c['id']=='launcher')
+                command=launcher['args']['script']
+                self.assertIn(' custom/train/client.py ',command)
+                self.assertTrue((config.parent.parent/'custom/train/client.py').is_file())
 
     def test_global_snapshots_are_weighted_post_aggregation_and_round_number_survives_reset(self):
         with tempfile.TemporaryDirectory() as td:

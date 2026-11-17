@@ -26,7 +26,7 @@ DATA_ROOT="$REPO_ROOT/data/federated_spatial16_v1"
 if [[ ! -d "$DATA_ROOT" ]]; then
     [[ -f .multimodal_tiles60_spatial16.latest ]] || fail 'Missing spatial source-data pointer'
     SOURCE_RUN="$(cat .multimodal_tiles60_spatial16.latest)"
-    .venv/bin/python prepare_federated_tiles16.py --source "$SOURCE_RUN/full/data" --output "$DATA_ROOT"
+    .venv/bin/python data_preprocessing/prepare_federated_tiles16.py --source "$SOURCE_RUN/full/data" --output "$DATA_ROOT"
 fi
 .venv/bin/python - "$DATA_ROOT" <<'PY'
 import sys, torch
@@ -39,14 +39,14 @@ print('Verified both patient-grouped spatial input layouts.')
 PY
 mkdir -p runs
 RUN_ROOT="$REPO_ROOT/runs/federated_tiles16_${SCOPE}_r${ROUNDS}_e${LOCAL_EPOCHS}_$(date +%Y%m%d_%H%M%S)_$$"
-.venv/bin/python run_federated_tiles16.py --data-root "$DATA_ROOT" --scope "$SCOPE" \
+.venv/bin/python experiments/run_federated_tiles16.py --data-root "$DATA_ROOT" --scope "$SCOPE" \
     --rounds "$ROUNDS" --local-epochs "$LOCAL_EPOCHS" --output "$RUN_ROOT/full" --validate-only "$@"
 mkdir "$RUN_ROOT"
 nohup bash -c '
     set +e
     data_root="$1"; scope="$2"; rounds="$3"; epochs="$4"; run_root="$5"
     shift 5
-    .venv/bin/python -u run_federated_tiles16.py --data-root "$data_root" --scope "$scope" \
+    .venv/bin/python -u experiments/run_federated_tiles16.py --data-root "$data_root" --scope "$scope" \
         --rounds "$rounds" --local-epochs "$epochs" --output "$run_root/full" "$@"
     result=$?
     printf "%s\n" "$result" > "$run_root/exit_code"

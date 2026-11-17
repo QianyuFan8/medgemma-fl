@@ -5,11 +5,11 @@ import tempfile
 import unittest
 
 from test_multimodal_tiles60 import multimodal_fixture, write_audit
-from prepare_multiimage_diagnostics import prepare as separate_images, signature
-from prepare_comet_subtype import write_tsv
-from prepare_federated_tiles16 import prepare, verify
-from run_federated_tiles16 import training_command, saved_rounds, verify_training, SEED
-from run_spatial20_inference import digest
+from medgemma_fl.preprocessing.prepare_multiimage_diagnostics import prepare as separate_images, signature
+from medgemma_fl.preprocessing.prepare_comet_subtype import write_tsv
+from medgemma_fl.preprocessing.prepare_federated_tiles16 import prepare, verify
+from medgemma_fl.experiments.run_federated_tiles16 import training_command, saved_rounds, verify_training, SEED
+from medgemma_fl.experiments.run_spatial20_inference import digest
 
 
 def source_fixture(root):

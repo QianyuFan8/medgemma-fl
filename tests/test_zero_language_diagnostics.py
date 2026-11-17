@@ -9,9 +9,9 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
-from adapter_scope import target_modules, infer_adapter_scope, trainable_summary
-from evaluate_subtype import option_prediction, predict_one
-from run_zero_language_diagnostics import main, score_command, verify_language_audit, BASE_MODEL
+from medgemma_fl.adapter_scope import target_modules, infer_adapter_scope, trainable_summary
+from medgemma_fl.evaluation.evaluate_subtype import option_prediction, predict_one
+from medgemma_fl.experiments.run_zero_language_diagnostics import main, score_command, verify_language_audit, BASE_MODEL
 
 
 class ZeroLanguageTests(unittest.TestCase):
@@ -71,8 +71,8 @@ class ZeroLanguageTests(unittest.TestCase):
             return {'input_ids': Tensor([[0] if text=='prompt' else
                                          [0, 1, 3] if text.endswith('NEG') else [0, 2, 4]])}
         row = {'patient_id': 'fixture', 'label_name': 'POS', 'prompt': 'Classify', 'image': None}
-        with patch.dict('sys.modules', {'torch': torch, 'inference_utils': SimpleNamespace(get_model_device=lambda m: 'cpu')}), \
-             patch('evaluate_subtype.encode', side_effect=encode):
+        with patch.dict('sys.modules', {'torch': torch, 'medgemma_fl.inference_utils': SimpleNamespace(get_model_device=lambda m: 'cpu')}), \
+             patch('medgemma_fl.evaluation.evaluate_subtype.encode', side_effect=encode):
             result = predict_one(Model(), SimpleNamespace(apply_chat_template=template), row, '.',
                                  ['NEG', 'POS'], 100, 'strict', 'option_scores', True)
         self.assertEqual(result['prediction'], 'NEG')
@@ -90,7 +90,7 @@ class ZeroLanguageTests(unittest.TestCase):
             calls=[]
             def stage(cmd, log, name, status_path, status):
                 calls.append(cmd)
-                if 'job.py' in cmd:
+                if 'train/federated.py' in cmd:
                     self.assertEqual(cmd[cmd.index('--adapter_scope')+1], 'language-only')
                     self.assertEqual(cmd[cmd.index('--num_train_epochs')+1], '10')
                     self.assertEqual(cmd[cmd.index('--learning_rate')+1], '5e-05')
@@ -104,7 +104,7 @@ class ZeroLanguageTests(unittest.TestCase):
                         cp=folder/f'epoch-{e:02d}.pt'; cp.write_bytes(b'weights')
                         cp.with_suffix('.json').write_text(json.dumps({'epoch':e,'planned_epochs':10,
                             'global_step':e*10,'checkpoint_sha256':hashlib.sha256(cp.read_bytes()).hexdigest()}))
-                elif 'evaluate_subtype.py' in cmd:
+                elif 'inference/medgemma.py' in cmd:
                     self.assertIn('--skip-generation',cmd)
                     self.assertEqual(cmd[cmd.index('--prediction-source')+1], 'option_scores')
                     self.assertNotEqual(cmd[cmd.index('--split')+1], 'test')
@@ -118,15 +118,15 @@ class ZeroLanguageTests(unittest.TestCase):
                 else:
                     Path(cmd[cmd.index('--output')+1]).write_text('{}')
             with patch('sys.argv',['runner','--data-root',str(data),'--output',str(output)]), \
-                 patch('run_zero_language_diagnostics.validate_clients'), \
-                 patch('run_zero_language_diagnostics.importlib.metadata.version',return_value='fixture'), \
-                 patch('run_zero_language_diagnostics.subprocess.check_output',return_value='fixture'), \
-                 patch('run_zero_language_diagnostics.run_stage',side_effect=stage), \
+                 patch('medgemma_fl.experiments.run_zero_language_diagnostics.validate_clients'), \
+                 patch('medgemma_fl.experiments.run_zero_language_diagnostics.importlib.metadata.version',return_value='fixture'), \
+                 patch('medgemma_fl.experiments.run_zero_language_diagnostics.subprocess.check_output',return_value='fixture'), \
+                 patch('medgemma_fl.experiments.run_zero_language_diagnostics.run_stage',side_effect=stage), \
                  patch.dict('sys.modules',{'torch':SimpleNamespace(load=lambda *a,**k:{'model':{language:None}})}):
                 main()
                 with self.assertRaises(FileExistsError): main()
-            self.assertEqual(len([c for c in calls if 'job.py' in c]),1)
-            self.assertEqual(len([c for c in calls if 'evaluate_subtype.py' in c]),9)
+            self.assertEqual(len([c for c in calls if 'train/federated.py' in c]),1)
+            self.assertEqual(len([c for c in calls if 'inference/medgemma.py' in c]),9)
             self.assertEqual(len(json.loads((output/'summary.json').read_text())),9)
             self.assertEqual(json.loads((output/'status.json').read_text())['state'],'completed')
 

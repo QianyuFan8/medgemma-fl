@@ -2,7 +2,7 @@ import ast
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
-from adapter_scope import saved_modules, infer_adapter_scope, trainable_summary, target_modules
+from medgemma_fl.adapter_scope import saved_modules, infer_adapter_scope, trainable_summary, target_modules
 
 class AdapterScopeTests(unittest.TestCase):
     def test_legacy_and_lora_checkpoint_detection(self):
@@ -25,7 +25,7 @@ class AdapterScopeTests(unittest.TestCase):
             trainable_summary(model,'lora-only')
 
     def test_peft_config_keeps_rank_but_changes_full_modules(self):
-        p=Path(__file__).resolve().parents[1]/'model.py'
+        p=Path(__file__).resolve().parents[1]/'src/medgemma_fl/model.py'
         t=ast.parse(p.read_text())
         fn=next(n for n in t.body if isinstance(n,ast.FunctionDef) and n.name=='create_lora_config')
         fn.body=[n for n in fn.body if not isinstance(n,ast.ImportFrom)]

@@ -19,7 +19,7 @@ for layout in central iid skew08; do
     iid) clients=3; partition=iid;;
     skew08) clients=3; partition=skew;;
   esac
-  python prepare_comet_subtype.py export --prepared data/fixed849_disjoint_paired \
+  python data_preprocessing/prepare_comet_subtype.py export --prepared data/fixed849_disjoint_paired \
     --modality multimodal --n-clients "$clients" --partition "$partition" \
     --dominant-fraction 0.8 --seed 20261011 --montage-dir "$montage" --output "${prefix}_${layout}"
   python scripts/check_fusion_splits.py --prepared data/fixed849_disjoint_paired \

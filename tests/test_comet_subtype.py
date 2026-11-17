@@ -9,13 +9,13 @@ import unittest
 
 from PIL import Image
 
-from methylation_utils import panel_fingerprint
-from methylation_validate import validate_clients
-from prepare_comet_subtype import allocate, assign_sites, audit, export, prepare, read_tsv, write_tsv
-from subtype_utils import (SUBTYPE_CLASSES, binary_auprc, binary_auroc, format_subtype_example,
+from medgemma_fl.methylation_utils import panel_fingerprint
+from medgemma_fl.methylation_validate import validate_clients
+from medgemma_fl.preprocessing.prepare_comet_subtype import allocate, assign_sites, audit, export, prepare, read_tsv, write_tsv
+from medgemma_fl.subtype_utils import (SUBTYPE_CLASSES, binary_auprc, binary_auroc, format_subtype_example,
                            make_subtype_record, normalize_slide_id, patient_from_compbio, read_mapping,
                            subtype_metrics)
-from evaluate_subtype import lenient_parse, positive_score
+from medgemma_fl.evaluation.evaluate_subtype import lenient_parse, positive_score
 
 
 def synthetic_inputs(root, n_probes=400):

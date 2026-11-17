@@ -5,9 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from test_comet_subtype import synthetic_inputs, fake_prepared
-from prepare_comet_subtype import audit, export, read_tsv, write_tsv
-from plan_fusion_cv import make_folds
-from evaluate_fusion_baselines import combine
+from medgemma_fl.preprocessing.prepare_comet_subtype import audit, export, read_tsv, write_tsv
+from medgemma_fl.preprocessing.plan_fusion_cv import make_folds
+from medgemma_fl.evaluation.evaluate_fusion_baselines import combine
 
 
 class FusionLinkageTests(unittest.TestCase):

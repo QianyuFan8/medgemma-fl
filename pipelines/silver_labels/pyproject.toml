@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "capstone-ridge-teacher"
+version = "0.4.0"
+description = "Patient-disjoint nested-CV Ridge teacher and silver-label preparation"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.26,<3", "pandas>=2.2,<4", "scikit-learn>=1.5,<2", "joblib>=1.4,<2", "openpyxl>=3.1,<4"]
+
+[project.scripts]
+ridge-teacher = "ridge_teacher.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"ridge_teacher.features" = ["*.R"]

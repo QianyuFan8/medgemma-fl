@@ -5,9 +5,9 @@ import random
 import tempfile
 import unittest
 
-from fusion_identity import validate_patient_rows
-from fusion_threshold import apply, choose_threshold, fit, metrics
-from prepare_comet_subtype import assign_sites, write_tsv
+from medgemma_fl.fusion_identity import validate_patient_rows
+from medgemma_fl.evaluation.fusion_threshold import apply, choose_threshold, fit, metrics
+from medgemma_fl.preprocessing.prepare_comet_subtype import assign_sites, write_tsv
 from scripts.check_fusion_splits import inspect, inspect_clients
 
 

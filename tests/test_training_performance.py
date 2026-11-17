@@ -8,7 +8,7 @@ import unittest
 from copy import copy
 import sys
 
-from training_performance import (add_performance_args, performance_cli, client_gpu_plan,
+from medgemma_fl.training_performance import (add_performance_args, performance_cli, client_gpu_plan,
     parse_client_gpu_groups, accumulation_for_world, distributed_layout)
 
 
@@ -46,7 +46,7 @@ class PerformanceTests(unittest.TestCase):
         with self.assertRaises(ValueError):distributed_layout({'WORLD_SIZE':'2','RANK':'2'})
 
     def test_job_configures_torchrun_and_scopes_shared_locks(self):
-        path=Path(__file__).resolve().parents[1]/'job.py'
+        path=Path(__file__).resolve().parents[1]/'src/medgemma_fl/training/federated.py'
         tree=ast.parse(path.read_text())
         fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='gpu_site_settings')
         ns=dict(os=os,copy=copy,sys=sys,shlex=shlex,parse_client_gpu_groups=parse_client_gpu_groups,

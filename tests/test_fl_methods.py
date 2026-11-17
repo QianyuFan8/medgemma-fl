@@ -5,7 +5,7 @@ try:
 except ImportError:  # pragma: no cover
     torch = None
 
-from fl_methods import (SCAFFOLD_WIRE_PREFIX, FLMethodState, answer_offsets, fedlc_adjust, fedlc_margins,
+from medgemma_fl.fl_methods import (SCAFFOLD_WIRE_PREFIX, FLMethodState, answer_offsets, fedlc_adjust, fedlc_margins,
                         is_scaffold_key, prox_penalty, scaffold_linear_term, scaffold_update_ci, shifted_answer_ce,
                         snapshot, split_scaffold_params, trainable_named_params)
 

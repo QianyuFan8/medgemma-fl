@@ -35,7 +35,7 @@ class FederatedLauncherTests(unittest.TestCase):
                 args=(root/'args.txt').read_text().splitlines()
                 for flag,value in (('--scope',scope),('--rounds','60'),('--local-epochs','1')):
                     self.assertEqual(args[args.index(flag)+1],value)
-                self.assertIn('run_federated_tiles16.py',args)
+                self.assertIn('experiments/run_federated_tiles16.py',args)
                 self.assertEqual(args[args.index('--gpus')+1],'0,1,2,3')
                 self.assertEqual(args[args.index('--preprocess_cache_dir')+1],'/tmp/cache with spaces')
                 self.assertIn('--no-local_eval',args)

@@ -33,10 +33,41 @@ __pycache__/
 .numba/
 .umap-deps/
 
-# Keep Markdown documentation local; do not publish it to this repository.
-*.[mM][dD]
-*.[mM][dD][xX]
-*.[mM][aA][rR][kK][dD][oO][wW][nN]
+# Documentation is part of the codebase and can be versioned.
 
 # Explicitly keep the local VM setup guide out of Git.
 /methylation/VM_LORA_ONLY_10_RUNS_ZH.md
+
+# Build artifacts and local credentials
+*.egg-info/
+build/
+dist/
+.env
+.env.*
+!.env.example
+
+# Private research data, weights, results, and handoff bundles (local only)
+/UMAP/umap_outputs/
+/outputs/
+/vm_backup/
+/return_results/
+*.svs
+*.h5
+*.hdf5
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.joblib
+*.pkl
+*.parquet
+*.rds
+*.RData
+*.zip
+*.tar.gz
+
+# Existing local explanatory notes, separate from the source handoff
+/docs/methylation_fl_explainer*.html
+/methylation/COMET_SUBTYPE.md
+/methylation/FUSION_ABLATIONS.md
+/methylation/FUSION_RUNBOOK.md

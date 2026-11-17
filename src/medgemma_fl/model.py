@@ -1,0 +1,234 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""
+MedGemma model helpers for federated LoRA fine-tuning.
+
+Adapted from the Google Health MedGemma Hugging Face fine-tuning notebook:
+https://github.com/google-health/medgemma/blob/main/notebooks/fine_tune_with_hugging_face.ipynb
+"""
+
+from __future__ import annotations
+
+import glob
+import os
+from collections import OrderedDict
+from typing import Any
+
+import torch
+import torch.nn as nn
+from medgemma_fl.data_utils import DEFAULT_MODEL_NAME_OR_PATH
+from medgemma_fl.adapter_scope import saved_modules, target_modules, trainable_summary
+from torch.nn.modules.module import _IncompatibleKeys
+from transformers import AutoModelForImageTextToText, BitsAndBytesConfig
+
+DEFAULT_LORA_ALPHA = 16
+DEFAULT_LORA_DROPOUT = 0.05
+DEFAULT_LORA_R = 16
+DEFAULT_TARGET_MODULES = "all-linear"
+MEDGEMMA_IMAGE_TOKEN_ID = 262144
+
+
+def create_lora_config(lora_rank: int = DEFAULT_LORA_R, adapter_scope: str = "legacy"):
+    from peft import LoraConfig
+
+    return LoraConfig(
+        lora_alpha=DEFAULT_LORA_ALPHA,
+        lora_dropout=DEFAULT_LORA_DROPOUT,
+        r=lora_rank,
+        bias="none",
+        ensure_weight_tying=True,
+        target_modules=target_modules(adapter_scope),
+        task_type="CAUSAL_LM",
+        modules_to_save=saved_modules(adapter_scope),
+    )
+
+
+def strip_model_prefix(state_dict: dict[str, Any]) -> dict[str, Any]:
+    stripped = {}
+    for key, value in state_dict.items():
+        stripped[key[6:] if key.startswith("model.") else key] = value
+    return stripped
+
+
+def load_adapter_state_dict_from_checkpoint(checkpoint_dir: str) -> dict[str, Any]:
+    checkpoint_dir = os.path.abspath(checkpoint_dir)
+    adapter_path = os.path.join(checkpoint_dir, "adapter_model.safetensors")
+    if os.path.isfile(adapter_path):
+        from safetensors.torch import load_file
+
+        return load_file(adapter_path, device="cpu")
+
+    safetensor_files = sorted(glob.glob(os.path.join(checkpoint_dir, "*.safetensors")))
+    if safetensor_files:
+        from safetensors.torch import load_file
+
+        state_dict = {}
+        for path in safetensor_files:
+            state_dict.update(load_file(path, device="cpu"))
+        return state_dict
+
+    bin_path = os.path.join(checkpoint_dir, "pytorch_model.bin")
+    if os.path.isfile(bin_path):
+        state_dict = torch.load(bin_path, map_location="cpu", weights_only=True)
+        if isinstance(state_dict, dict) and "state_dict" in state_dict:
+            state_dict = state_dict["state_dict"]
+        return state_dict
+
+    raise FileNotFoundError(f"No adapter checkpoint files found in {checkpoint_dir}")
+
+
+def get_model_device_map(local_rank: int | None = None):
+    if not torch.cuda.is_available():
+        return None
+    if local_rank is None:
+        return {"": 0}
+    return {"": local_rank}
+
+
+def resolve_attn_implementation(attn_implementation: str | None = None) -> str:
+    """'eager' matches the original notebook; 'sdpa' avoids materialising the full
+    attention matrix and is needed for long CpG prompts (set MEDGEMMA_ATTN_IMPLEMENTATION
+    or pass --attn_implementation)."""
+    choice = attn_implementation or os.environ.get("MEDGEMMA_ATTN_IMPLEMENTATION", "eager")
+    if choice not in ("eager", "sdpa", "flash_attention_2"):
+        raise ValueError(f"Unsupported attention implementation: {choice}")
+    return choice
+
+
+def load_medgemma_base_model(
+    model_name_or_path: str = DEFAULT_MODEL_NAME_OR_PATH,
+    *,
+    quantized: bool = False,
+    device_map=None,
+    attn_implementation: str | None = None,
+):
+    model_kwargs = {
+        "attn_implementation": resolve_attn_implementation(attn_implementation),
+        "dtype": torch.bfloat16,
+        "trust_remote_code": True,
+    }
+    if device_map is not None:
+        model_kwargs["device_map"] = device_map
+    if quantized:
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_quant_storage=torch.bfloat16,
+        )
+    else:
+        model_kwargs["low_cpu_mem_usage"] = True
+
+    model = AutoModelForImageTextToText.from_pretrained(model_name_or_path, **model_kwargs)
+    model.config.use_cache = False
+    return model
+
+
+def create_peft_medgemma_model(
+    model_name_or_path: str = DEFAULT_MODEL_NAME_OR_PATH,
+    *,
+    quantized: bool = False,
+    device_map=None,
+    lora_rank: int = DEFAULT_LORA_R,
+    adapter_scope: str = "legacy",
+    attn_implementation: str | None = None,
+    gradient_checkpointing: bool = True,
+):
+    from peft import get_peft_model, prepare_model_for_kbit_training
+
+    base_model = load_medgemma_base_model(model_name_or_path, quantized=quantized, device_map=device_map,
+                                          attn_implementation=attn_implementation)
+    if quantized:
+        base_model = prepare_model_for_kbit_training(
+            base_model, use_gradient_checkpointing=gradient_checkpointing,
+            gradient_checkpointing_kwargs={"use_reentrant": False})
+    model = get_peft_model(base_model, create_lora_config(lora_rank=lora_rank, adapter_scope=adapter_scope))
+    trainable_summary(model, adapter_scope)  # Fail before training if the requested scope is violated.
+    return model
+
+
+def apply_adapter_state(model, adapter_state: dict[str, Any]) -> None:
+    from peft import set_peft_model_state_dict
+
+    # SCAFFOLD control variates travel alongside the adapter but are not weights.
+    state = {k: v for k, v in strip_model_prefix(adapter_state).items() if not k.startswith("scaffold.")}
+    set_peft_model_state_dict(model, state)
+
+
+def get_adapter_state_dict(model) -> dict[str, torch.Tensor]:
+    from peft import get_peft_model_state_dict
+
+    adapter_state = get_peft_model_state_dict(model)
+    return {key: value.detach().cpu().contiguous() for key, value in adapter_state.items()}
+
+
+def infer_uniform_lora_rank_from_state_dict(adapter_state: dict[str, Any]) -> int:
+    ranks = set()
+    for key, value in adapter_state.items():
+        if "scaffold." in key:
+            continue
+        if ".lora_A." in key:
+            ranks.add(int(value.shape[0]))
+        elif ".lora_B." in key:
+            ranks.add(int(value.shape[1]))
+
+    if not ranks:
+        raise ValueError("No LoRA A/B tensors found in adapter state dict.")
+    if len(ranks) != 1:
+        raise ValueError(
+            f"Expected a uniform LoRA rank in adapter state dict, found multiple ranks: {sorted(ranks)}. "
+            "This loader currently supports a single server-side global rank."
+        )
+    return next(iter(ranks))
+
+
+class MedGemmaLoRAModel(nn.Module):
+    """Server-side initial model that exposes only LoRA adapter weights."""
+
+    def __init__(self, model_name_or_path: str = DEFAULT_MODEL_NAME_OR_PATH, lora_rank: int = DEFAULT_LORA_R,
+                 adapter_scope: str = "legacy", seed: int | None = None):
+        super().__init__()
+        if seed is not None:
+            from transformers import set_seed
+            set_seed(seed)
+        self.model_name_or_path = model_name_or_path
+        self.lora_rank = lora_rank
+        self.model = create_peft_medgemma_model(
+            model_name_or_path=model_name_or_path,
+            quantized=False,
+            lora_rank=lora_rank,
+            adapter_scope=adapter_scope,
+        )
+
+    def forward(self, *args, **kwargs):
+        return self.model(*args, **kwargs)
+
+    def state_dict(self, *args, destination=None, prefix="", keep_vars=False, **kwargs):
+        adapter_state = get_adapter_state_dict(self.model)
+        if destination is None:
+            destination = OrderedDict()
+        for key, value in adapter_state.items():
+            destination[prefix + "model." + key] = value if keep_vars else value.detach()
+        return destination
+
+    def load_state_dict(self, state_dict, strict: bool = True, assign: bool = False):
+        adapter_state = strip_model_prefix(state_dict)
+        if not adapter_state:
+            if strict:
+                raise RuntimeError("No LoRA adapter keys found in provided state_dict.")
+            return _IncompatibleKeys([], list(state_dict.keys()))
+
+        apply_adapter_state(self.model, adapter_state)
+        return _IncompatibleKeys([], [])

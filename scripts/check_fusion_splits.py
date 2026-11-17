@@ -7,7 +7,7 @@ import json
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from fusion_identity import validate_patient_rows
+from medgemma_fl.fusion_identity import validate_patient_rows
 
 def read(path, sep="\t"):
     with Path(path).open(newline="", encoding="utf-8-sig") as f:

@@ -1,0 +1,8 @@
+.env/
+.tools/
+.mamba/
+inputs/
+outputs/
+*.egg-info/
+__pycache__/
+*.py[cod]

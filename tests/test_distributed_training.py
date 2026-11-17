@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import unittest
 import torch
 import torch.multiprocessing as mp
-from distributed_training import DistributedClient
-from fl_methods import FLMethodState
+from medgemma_fl.distributed_training import DistributedClient
+from medgemma_fl.fl_methods import FLMethodState
 
 
 class FakeFlare:

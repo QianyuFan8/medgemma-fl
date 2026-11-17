@@ -59,7 +59,7 @@ nohup bash -c '
     set +e
     source_run=$1; epoch=$2; scope=$3; run_root=$4
     shift 4
-    .venv/bin/python -u run_spatial20_inference.py --source-run "$source_run" --epoch "$epoch" \
+    .venv/bin/python -u experiments/run_spatial20_inference.py --source-run "$source_run" --epoch "$epoch" \
         --adapter-scope "$scope" --output "$run_root/full" "$@"
     result=$?
     printf "%s\n" "$result" > "$run_root/exit_code"

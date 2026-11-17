@@ -33,7 +33,7 @@ RUN_ROOT="$REPO_ROOT/runs/zero_language_diagnostics_${ARM}_$(date +%Y%m%d_%H%M%S
 mkdir "$RUN_ROOT"
 nohup bash -c '
     set +e
-    .venv/bin/python -u run_zero_language_diagnostics.py --data-root "$1" --output "$2/full"
+    .venv/bin/python -u experiments/run_zero_language_diagnostics.py --data-root "$1" --output "$2/full"
     result=$?
     printf "%s\n" "$result" > "$2/exit_code"
     printf "QUEUE_EXIT_CODE=%s\n" "$result"

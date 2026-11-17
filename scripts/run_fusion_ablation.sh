@@ -43,7 +43,7 @@ case "$mode" in
   [[ ! -e $target ]] || { echo "Existing run: $target; refusing overwrite"; exit 1; }
   git rev-parse HEAD > "$root/logs/${prefix}_${suffix}_commit.txt"
   git diff > "$root/logs/${prefix}_${suffix}_code.patch"
-  python job.py --task subtype --adapter_scope "$scope" --attn_implementation sdpa \
+  python train/federated.py --task subtype --adapter_scope "$scope" --attn_implementation sdpa \
     --max_seq_length "$context" --data_dir "$data/clients" --n_clients "$clients" \
     --gpu "$gpus" --site_lora_ranks "$ranks" --global_lora_rank 16 --sim_threads 1 \
     --fl_method "$method" --lora_aggregation naive --learning_rate 2e-4 \
@@ -56,7 +56,7 @@ case "$mode" in
  *-eval)
   checkpoint="$root/${prefix}_train/medgemma/server/simulate_job/app_server/FL_global_model.pt"
   test -f "$checkpoint"
-  python evaluate_subtype.py medgemma --data-dir "$data" --split "$split" \
+  python inference/medgemma.py medgemma --data-dir "$data" --split "$split" \
     --model-path "$checkpoint" --max-seq-length "$context" \
     --output "$root/${prefix}_${split}" 2>&1 | tee "$root/logs/${prefix}_${split}.log"
   ;;

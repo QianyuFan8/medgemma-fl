@@ -8,12 +8,12 @@ import unittest
 from unittest.mock import patch
 
 from test_multiimage_diagnostics import fixture
-from check_methylation_context import measure_context
-from methylation_validate import validate_clients
-from prepare_multiimage_diagnostics import convert_record, prepare, signature
-from run_multimodal_tiles60 import EPOCHS, SCOPES, main, training_command, verify_scope
-from run_epoch_diagnostics import snapshot
-from subtype_utils import make_subtype_record, format_subtype_example
+from medgemma_fl.evaluation.check_methylation_context import measure_context
+from medgemma_fl.methylation_validate import validate_clients
+from medgemma_fl.preprocessing.prepare_multiimage_diagnostics import convert_record, prepare, signature
+from medgemma_fl.experiments.run_multimodal_tiles60 import EPOCHS, SCOPES, main, training_command, verify_scope
+from medgemma_fl.experiments.run_epoch_diagnostics import snapshot
+from medgemma_fl.subtype_utils import make_subtype_record, format_subtype_example
 
 
 def multimodal_fixture(root):
@@ -92,7 +92,7 @@ class Multimodal60Tests(unittest.TestCase):
             output = Path(td) / 'out'; prepare(source, output, modality='multimodal')
             processor = SimpleNamespace(apply_chat_template=lambda *a, **k: 'text',
                                         tokenizer=lambda *a, **k: {'input_ids': [1] * 100})
-            with patch('check_methylation_context.encode_methylation_example', return_value=([1] * 110, None)):
+            with patch('medgemma_fl.evaluation.check_methylation_context.encode_methylation_example', return_value=([1] * 110, None)):
                 a = measure_context(source, processor)
                 b = measure_context(output, processor)
             self.assertEqual(b['required_max_seq_length'] - a['required_max_seq_length'], 15 * 280)
@@ -116,7 +116,7 @@ class Multimodal60Tests(unittest.TestCase):
             output = root / 'run'; calls = []
             def stage(cmd, log, name, *rest):
                 calls.append(cmd)
-                if 'job.py' in cmd:
+                if 'train/federated.py' in cmd:
                     smoke = '--max_steps' in cmd
                     scope = cmd[cmd.index('--adapter_scope') + 1]
                     ws = Path(cmd[cmd.index('--workspace') + 1]); ws.mkdir(parents=True)
@@ -137,7 +137,7 @@ class Multimodal60Tests(unittest.TestCase):
                                 checkpoint_sha256=hashlib.sha256(cp.read_bytes()).hexdigest())))
                             snapshot(ws, e, planned_epochs=60)
                             with self.assertRaises(RuntimeError): snapshot(ws, e)  # old 10-epoch expectations remain enforced
-                elif 'evaluate_subtype.py' in cmd:
+                elif 'inference/medgemma.py' in cmd:
                     self.assertIn(cmd[cmd.index('--split') + 1], ('train', 'validation'))
                     self.assertIn('--skip-generation', cmd)
                     self.assertEqual(cmd[cmd.index('--prediction-source') + 1], 'option_scores')
@@ -147,20 +147,20 @@ class Multimodal60Tests(unittest.TestCase):
                 else:
                     Path(cmd[cmd.index('--output') + 1]).write_text('{}')
             with patch('sys.argv', ['runner', '--data-root', str(data), '--output', str(output), '--arm', 'top16']), \
-                 patch('run_multimodal_tiles60.importlib.metadata.version', return_value='fixture'), \
-                 patch('run_multimodal_tiles60.subprocess.check_output', return_value='fixture'), \
-                 patch('run_multimodal_tiles60.check_context', return_value={}), \
-                 patch('run_multimodal_tiles60.processor_preflight'), \
-                 patch('run_multimodal_tiles60.run_stage', side_effect=stage):
+                 patch('medgemma_fl.experiments.run_multimodal_tiles60.importlib.metadata.version', return_value='fixture'), \
+                 patch('medgemma_fl.experiments.run_multimodal_tiles60.subprocess.check_output', return_value='fixture'), \
+                 patch('medgemma_fl.experiments.run_multimodal_tiles60.check_context', return_value={}), \
+                 patch('medgemma_fl.experiments.run_multimodal_tiles60.processor_preflight'), \
+                 patch('medgemma_fl.experiments.run_multimodal_tiles60.run_stage', side_effect=stage):
                 main()
                 with self.assertRaises(FileExistsError): main()
-            jobs = [c for c in calls if 'job.py' in c]
+            jobs = [c for c in calls if 'train/federated.py' in c]
             self.assertEqual(len(jobs), 4)
             self.assertTrue(all('--max_steps' in c for c in jobs[:2]))
             self.assertTrue(all('--max_steps' not in c for c in jobs[2:]))
             self.assertEqual(len({c[c.index('--workspace') + 1] for c in jobs}), 4)
             self.assertEqual([c[c.index('--adapter_scope') + 1] for c in jobs], list(SCOPES) * 2)
-            self.assertEqual(len([c for c in calls if 'evaluate_subtype.py' in c]), 28)
+            self.assertEqual(len([c for c in calls if 'inference/medgemma.py' in c]), 28)
             self.assertEqual(len(json.loads((output / 'summary.json').read_text())), 28)
             self.assertEqual(json.loads((output / 'status.json').read_text())['state'], 'completed')
 

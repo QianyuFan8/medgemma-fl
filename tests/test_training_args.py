@@ -8,7 +8,7 @@ import unittest
 
 def load_builder():
     # Exercise the actual function without importing CUDA/NVFlare dependencies.
-    path = Path(__file__).resolve().parents[1] / "client.py"
+    path = Path(__file__).resolve().parents[1] / "src/medgemma_fl/training/client.py"
     tree = ast.parse(path.read_text())
     function = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
                     and n.name == "_build_training_args")

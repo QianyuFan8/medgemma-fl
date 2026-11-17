@@ -3,7 +3,7 @@ import tempfile
 import unittest
 import torch
 from PIL import Image
-from training_cache import CachedCollator
+from medgemma_fl.training_cache import CachedCollator
 
 
 class CacheTests(unittest.TestCase):

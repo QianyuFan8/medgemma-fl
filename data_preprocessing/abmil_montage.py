@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from subtype_utils import SUBTYPE_CLASSES, binary_auroc, binary_auprc
+from medgemma_fl.subtype_utils import SUBTYPE_CLASSES, binary_auroc, binary_auprc
 from data_preprocessing.tile_selection import select_tiles, spatial_metrics
 
 
@@ -222,7 +222,7 @@ def main():
     sub = p.add_subparsers(dest="command", required=True)
     tr = sub.add_parser("train")
     tr.add_argument("--embeddings", required=True, help="Directory of <slide>.h5 from data_preprocessing/wsi_embed.py")
-    tr.add_argument("--prepared", required=True, help="prepare_comet_subtype.py prepare output (splits.tsv)")
+    tr.add_argument("--prepared", required=True, help="data_preprocessing/prepare_comet_subtype.py prepare output (splits.tsv)")
     tr.add_argument("--output", required=True)
     tr.add_argument("--epochs", type=int, default=30)
     tr.add_argument("--eval-every", type=int, default=5)

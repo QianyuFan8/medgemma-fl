@@ -10,10 +10,10 @@ from unittest.mock import patch
 import numpy as np
 from PIL import Image
 
-from run_spatial20_inference import (extend_selection, original_indices, prepare_pairs, prompt_for_twenty,
+from medgemma_fl.experiments.run_spatial20_inference import (extend_selection, original_indices, prepare_pairs, prompt_for_twenty,
                                      save_prepared_manifest, load_prepared_pairs, validate_weight_scope)
-from prepare_multiimage_diagnostics import convert_record
-from subtype_utils import make_subtype_record
+from medgemma_fl.preprocessing.prepare_multiimage_diagnostics import convert_record
+from medgemma_fl.subtype_utils import make_subtype_record
 
 
 class SpatialTwentyTests(unittest.TestCase):
@@ -98,7 +98,7 @@ class SpatialTwentyTests(unittest.TestCase):
                 def read_region(self,xy,level,size):return Image.new('RGB',size,(xy[0]//448,20,30))
             with patch.dict(sys.modules,{'h5py':SimpleNamespace(File=lambda *a:FakeH5()),
                                         'openslide':SimpleNamespace(OpenSlide=lambda *a:FakeSlide())}), \
-                 patch('methylation_validate.validate_clients',return_value=dict(modality='multimodal',image_layout='tiles16',probes=list(range(849)))):
+                 patch('medgemma_fl.methylation_validate.validate_clients',return_value=dict(modality='multimodal',image_layout='tiles16',probes=list(range(849)))):
                 pairs = prepare_pairs(data,base/'montage',base/'emb',base/'abmil',base/'svs',base/'output')
             self.assertEqual([x['image_count'] for x in pairs],[16,20])
             for a,b in zip(pairs[0]['images'],pairs[1]['images']):self.assertEqual(a.tobytes(),b.tobytes())
@@ -108,7 +108,7 @@ class SpatialTwentyTests(unittest.TestCase):
             self.assertFalse(json.loads((base/'output/tile_audit.json').read_text())[0]['extra_tiles_spacing_relaxed'])
             save_prepared_manifest(data, base/'output')
             (base/'reuse').mkdir()
-            with patch('methylation_validate.validate_clients',return_value=dict(modality='multimodal',image_layout='tiles16',probes=list(range(849)))):
+            with patch('medgemma_fl.methylation_validate.validate_clients',return_value=dict(modality='multimodal',image_layout='tiles16',probes=list(range(849)))):
                 reused = load_prepared_pairs(data, base/'output', base/'reuse')
                 for a, b in zip(pairs, reused):
                     self.assertEqual(a['prompt'], b['prompt'])

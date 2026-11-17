@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "capstone-medgemma-fl"
+version = "0.5.0"
+description = "MedGemma centralized and federated multimodal research pipelines"
+requires-python = ">=3.11"
+# Install the chosen CPU/CUDA environment separately; an editable install must
+# not silently replace its torch wheel or download model weights.
+dependencies = []
+
+[project.scripts]
+medgemma-train = "medgemma_fl.training.centralized:main"
+medgemma-federated = "medgemma_fl.training.federated:main"
+medgemma-evaluate = "medgemma_fl.evaluation.evaluate_subtype:main"
+medgemma-student = "pipelines.medgemma_student.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src", "."]
+include = ["medgemma_fl*", "data_preprocessing*", "pipelines*"]
+exclude = ["pipelines.silver_labels.tests*"]
+
+[tool.setuptools.package-data]
+"pipelines.silver_labels.src.ridge_teacher.features" = ["*.R"]
