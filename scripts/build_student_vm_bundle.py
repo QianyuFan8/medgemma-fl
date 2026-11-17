@@ -23,7 +23,7 @@ def main():
     p.add_argument('--capstone-root',type=Path,default=repo.parent)
     p.add_argument('--output',type=Path,required=True)
     a=p.parse_args();base=a.capstone_root.resolve();out=a.output.resolve()
-    archive=out/'medgemma_student_vm_20261117_v2.tar.gz'
+    archive=out/'medgemma_student_vm_20261117_v3.tar.gz'
     if archive.exists():raise FileExistsError('Use a new output directory: '+str(archive))
     files={}
     def add(path,name):

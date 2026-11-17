@@ -1,6 +1,6 @@
 # DNAnexus → spatial16 → gold/silver student: VM runbook
 
-Prepared 2026-11-17. Use the portable `medgemma_student_vm_20261117_v2.tar.gz` bundle; it contains the prepared source-code snapshot, frozen inputs, and 48 reusable H-Optimus-1 feature bags. It contains patient-linked research data; transfer only to your authorized research VM. No credentials are included.
+Prepared 2026-11-17. Use the portable `medgemma_student_vm_20261117_v3.tar.gz` bundle; it contains the prepared source-code snapshot, frozen inputs, and 48 reusable H-Optimus-1 feature bags. It contains patient-linked research data; transfer only to your authorized research VM. No credentials are included.
 
 ## What is ready, and what still needs a VM
 
@@ -18,8 +18,8 @@ Prepared 2026-11-17. Use the portable `medgemma_student_vm_20261117_v2.tar.gz` b
 Upload the `.tar.gz` and its `.sha256` file to the VM, then run in that directory:
 
 ```bash
-sha256sum -c medgemma_student_vm_20261117_v2.tar.gz.sha256
-tar -xzf medgemma_student_vm_20261117_v2.tar.gz
+sha256sum -c medgemma_student_vm_20261117_v3.tar.gz.sha256
+tar -xzf medgemma_student_vm_20261117_v3.tar.gz
 cd medgemma_student_vm/repo
 ```
 

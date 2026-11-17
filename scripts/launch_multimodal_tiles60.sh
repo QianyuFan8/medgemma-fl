@@ -23,7 +23,7 @@ if [[ -n "$GPU_PIDS" ]]; then
     echo 'GPU has an active compute process. Inspect nvidia-smi before starting.' >&2
     exit 1
 fi
-.venv/bin/python -c 'from run_multimodal_tiles60 import EPOCHS; import torch; assert torch.cuda.is_available(); print("Snapshot epochs:", EPOCHS)'
+.venv/bin/python -c 'from medgemma_fl.experiments.run_multimodal_tiles60 import EPOCHS; import torch; assert torch.cuda.is_available(); print("Snapshot epochs:", EPOCHS)'
 test -f "$DATA_ROOT/multimodal/task.json"
 mkdir -p "$REPO_ROOT/runs"
 RUN_ROOT="$REPO_ROOT/runs/multimodal_tiles60_${ARM}_$(date +%Y%m%d_%H%M%S)_$$"

@@ -2,6 +2,7 @@
 import ast
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -21,6 +22,14 @@ class RepositoryLayoutTests(unittest.TestCase):
         for file in (ROOT/'src').rglob('*.py'):
             for n in ast.walk(ast.parse(file.read_text())):
                 if isinstance(n,ast.ImportFrom) and not n.level:self.assertNotIn(n.module,old,str(file))
+
+    def test_shell_embedded_python_uses_package_imports(self):
+        old=set(json.loads((ROOT/'docs/entrypoint_migration.json').read_text())['imports'])
+        for script in (ROOT/'scripts').glob('*.sh'):
+            # Also inspect Python snippets embedded in heredocs and python -c.
+            imports=re.findall(r'\b(?:from|import)\s+([a-zA-Z_][a-zA-Z_0-9.]*)',script.read_text())
+            for module in imports:
+                self.assertNotIn(module,old,str(script))
 
     def test_public_cli_and_legacy_dispatch_work_from_another_directory(self):
         with tempfile.TemporaryDirectory() as td:

@@ -31,7 +31,7 @@ fi
 .venv/bin/python - "$DATA_ROOT" <<'PY'
 import sys, torch
 from pathlib import Path
-from prepare_federated_tiles16 import verify
+from medgemma_fl.preprocessing.prepare_federated_tiles16 import verify
 for layout in ('iid', 'skew08'):
     verify(Path(sys.argv[1])/layout)
 assert torch.cuda.is_available(), 'CUDA unavailable'

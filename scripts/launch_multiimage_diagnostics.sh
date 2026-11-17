@@ -23,7 +23,7 @@ if [[ -n "$GPU_PIDS" ]]; then
     echo 'GPU has an active compute process. Inspect nvidia-smi before starting.' >&2
     exit 1
 fi
-.venv/bin/python -c 'from subtype_utils import load_example_images; from run_multiimage_diagnostics import find_baseline; import torch; assert torch.cuda.is_available(); import sys; print("Matched baseline:", find_baseline(sys.argv[1]))' "$ARM"
+.venv/bin/python -c 'from medgemma_fl.subtype_utils import load_example_images; from medgemma_fl.experiments.run_multiimage_diagnostics import find_baseline; import torch; assert torch.cuda.is_available(); import sys; print("Matched baseline:", find_baseline(sys.argv[1]))' "$ARM"
 mkdir -p "$REPO_ROOT/runs"
 RUN_ROOT="$REPO_ROOT/runs/multiimage_diagnostics_${ARM}_$(date +%Y%m%d_%H%M%S)_$$"
 mkdir "$RUN_ROOT"

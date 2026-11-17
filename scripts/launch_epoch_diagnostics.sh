@@ -27,7 +27,7 @@ if [[ -n "$GPU_PIDS" ]]; then
     echo 'GPU has an active compute process. Inspect nvidia-smi before starting.' >&2
     exit 1
 fi
-.venv/bin/python -c 'from transformers import TrainerCallback; from client import EpochAdapterCheckpoint; import torch; assert torch.cuda.is_available(); print("Preflight imports and CUDA passed")'
+.venv/bin/python -c 'from transformers import TrainerCallback; from medgemma_fl.training.client import EpochAdapterCheckpoint; import torch; assert torch.cuda.is_available(); print("Preflight imports and CUDA passed")'
 mkdir -p "$REPO_ROOT/runs"
 RUN_ROOT="$REPO_ROOT/runs/epoch_diagnostics_${ARM}_$(date +%Y%m%d_%H%M%S)_$$"
 mkdir "$RUN_ROOT"

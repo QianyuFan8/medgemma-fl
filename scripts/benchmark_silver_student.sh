@@ -25,7 +25,7 @@ PY
 mkdir -p "$(dirname "$OUT")"
 python - "$DATA" "${OUT}.processor.json" <<'PY'
 import sys
-from prepare_multiimage_diagnostics import processor_preflight
+from medgemma_fl.preprocessing.prepare_multiimage_diagnostics import processor_preflight
 processor_preflight(sys.argv[1],sys.argv[2])
 PY
 # Fixed effective batch=4: single GPU accumulation=4; four GPUs accumulation=1.
