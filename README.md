@@ -4,11 +4,11 @@ Centralized and federated MedGemma LoRA/QLoRA experiments for pediatric RMS FOXO
 
 ## Start here
 
-- [目录与代码阅读指南](docs/REPOSITORY_GUIDE_ZH.md)
-- [Current gold/silver student pipeline](pipelines/medgemma_student/README.md)
+- [Repository and code guide](docs/REPOSITORY_GUIDE.md)
+- [Current gold/silver student pipeline](pipelines/medgemma_student/README_EN.md)
 - [VM setup, DNAnexus download and one/four-GPU tests](pipelines/medgemma_student/VM_DNANEXUS.md)
 - [DDP and performance settings](docs/TRAINING_PERFORMANCE.md)
-- [Ridge teacher handoff](pipelines/silver_labels/README.md)
+- [Ridge teacher handoff](pipelines/silver_labels/README_EN.md)
 
 ## Layout
 
@@ -57,6 +57,6 @@ For a historical copied command, use the compatibility dispatcher:
 python scripts/legacy_entrypoint.py train_centralized.py --help
 ```
 
-The literal old command `python job.py ...` no longer works; root-level shim files are not retained. Historical external archives and saved results are unchanged. Use the **v2 student VM bundle** after this reorganization.
+The literal old command `python job.py ...` no longer works; root-level shim files are not retained. Historical external archives and saved results are unchanged. Use the **v3 student VM bundle** after this reorganization.
 
 Patient inputs, credentials, model weights and VM backups are separate from source code. `data/`, `runs/` and `logs/` are ignored local runtime directories. CPU tests and job export checks do not replace actual CUDA execution.

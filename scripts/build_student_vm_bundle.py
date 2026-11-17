@@ -38,7 +38,7 @@ def main():
             if (file.is_file() and not any(part.startswith('.') or part=='__pycache__' for part in rel.parts)
                 and 'site-packages' not in rel.parts and file.suffix in {'.py','.sh','.R','.md','.toml','.yml','.txt'}):
                 add(file,'repo/'+rel.as_posix())
-    for name in ('REPOSITORY_GUIDE_ZH.md','TRAINING_PERFORMANCE.md','entrypoint_migration.json'):
+    for name in ('REPOSITORY_GUIDE.md','TRAINING_PERFORMANCE.md','entrypoint_migration.json'):
         add(repo/'docs'/name,'repo/docs/'+name)
     for name in ('student_train.csv','silver_labels.csv','image_input_manifest.csv','paired_selected_cpg_beta_imputed.csv','panel_provenance.json'):
         add(base/'return_results/silver'/name,'inputs/returned/silver/'+name)

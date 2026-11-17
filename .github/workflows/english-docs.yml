@@ -1,0 +1,14 @@
+name: English documentation
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  english-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check tracked documentation language
+        run: python3 scripts/check_english_docs.py

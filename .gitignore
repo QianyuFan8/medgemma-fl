@@ -71,3 +71,11 @@ dist/
 /methylation/COMET_SUBTYPE.md
 /methylation/FUSION_ABLATIONS.md
 /methylation/FUSION_RUNBOOK.md
+
+# Repository documentation must be English; Chinese copies remain local only.
+*_ZH.*
+*_zh.*
+*.zh.*
+*.zh-CN.*
+/pipelines/medgemma_student/README.md
+/pipelines/silver_labels/README.md
