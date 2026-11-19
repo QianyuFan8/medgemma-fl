@@ -7,6 +7,8 @@ import unittest
 import torch
 import torch.multiprocessing as mp
 from medgemma_fl.weighted_sft import patient_weighted_ce, weighted_forward, WeightedCollator, make_weighted_trainer
+from medgemma_fl.weighted_sft import validate_student_weights
+from medgemma_fl.fl_methods import FLMethodState
 
 
 class Toy(torch.nn.Module):
@@ -38,6 +40,37 @@ def worker(rank,port):
 
 
 class WeightedTests(unittest.TestCase):
+    def test_federated_weight_contract(self):
+        spec=dict(reduction='patient_mean_of_weighted_answer_token_mean',gold=1.,silver=.3)
+        validate_student_weights([dict(label_source='silver',student_loss_weight=.3)],spec)
+        for row in [dict(label_source='silver',student_loss_weight=1.),
+                    dict(label_source='gold',student_loss_weight=float('nan'))]:
+            with self.assertRaises(ValueError):validate_student_weights([row],spec)
+
+    def test_federated_fedavg_preserves_weighted_loss(self):
+        class Stub:
+            def __init__(self,**kw):self.accelerator=SimpleNamespace(num_processes=1)
+        trainer=FLMethodState('fedavg').make_trainer(Stub,weighted_labels=True)
+        model=Toy();inputs=batch()
+        self.assertFalse(trainer.model_accepts_loss_kwargs)
+        self.assertTrue(torch.allclose(trainer.compute_loss(model,inputs),weighted_forward(model,inputs)))
+
+    def test_fedlc_silver_loss_and_gradient_scaled(self):
+        class LM(Toy):
+            def get_base_model(self):
+                return SimpleNamespace(model=None,lm_head=None,config=SimpleNamespace(
+                    get_text_config=lambda:SimpleNamespace(final_logit_softcapping=None)))
+        model=LM();state=FLMethodState('fedlc',classes=['NEG','POS'])
+        state.token_ids={'NEG':3,'POS':5};state.margins={'NEG':.5,'POS':1.}
+        inputs={k:v[:1] for k,v in batch().items()}
+        gold=state.fedlc_loss(model,inputs,wrapped_model=model)
+        gold.backward();grad=model.head.weight.grad.clone();model.zero_grad()
+        inputs['student_loss_weight']=torch.tensor([.3])
+        silver=state.fedlc_loss(model,inputs,wrapped_model=model)
+        silver.backward()
+        self.assertAlmostEqual(silver.item()/gold.item(),.3,places=6)
+        self.assertTrue(torch.allclose(model.head.weight.grad,grad*.3,atol=1e-6))
+
     def test_silver_weight_does_not_cancel_at_batch_one(self):
         torch.manual_seed(1);m=Toy();b={k:v[:1] for k,v in batch().items()}
         gold=weighted_forward(m,b);b['student_loss_weight']=torch.tensor([.3]);silver=weighted_forward(m,b)

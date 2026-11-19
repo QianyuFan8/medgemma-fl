@@ -37,6 +37,8 @@ from nvflare.recipe import SimEnv, add_experiment_tracking
 def define_parser():
     parser = argparse.ArgumentParser(description="Federated MedGemma QLoRA fine-tuning with FedAvg.")
     add_performance_args(parser)
+    parser.add_argument('--weighted_labels', action='store_true',
+                        help='Preserve explicit gold/silver patient loss multipliers on each client.')
     parser.add_argument('--effective_batch_size', type=int, default=None,
                         help='Keep this effective batch per client by adjusting accumulation for its GPU count.')
     parser.add_argument("--task", choices=("histology", "methylation", "subtype"), default="histology")
@@ -263,6 +265,8 @@ def _build_train_args(args, site_data_path: str, image_root: str, report_to: str
     ]
     if getattr(args, "client_gpu_lock", None):
         train_args.extend(["--client_gpu_lock", os.path.abspath(args.client_gpu_lock)])
+    if getattr(args, 'weighted_labels', False):
+        train_args.append('--weighted_labels')
     if args.attn_implementation:
         train_args.extend(["--attn_implementation", args.attn_implementation])
     if args.seed is not None:
@@ -334,6 +338,8 @@ def main():
             args.site_lora_ranks = ",".join([str(args.global_lora_rank)] * n_clients)
         from medgemma_fl.methylation_validate import validate_clients
         task_spec = validate_clients(data_dir, n_clients, require_patient_groups=args.task == "subtype")
+        if task_spec.get('student_loss') and not args.weighted_labels:
+            raise ValueError('Gold/silver exports require --weighted_labels in federated training')
         if args.task == "subtype":
             # Montage paths in the exported JSON are relative to the export root.
             image_root = os.path.dirname(data_dir)

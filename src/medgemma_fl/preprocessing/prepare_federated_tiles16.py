@@ -17,8 +17,11 @@ def prepare(source, output, layout, seed=20261011):
     if layout not in ('iid', 'skew08'):
         raise ValueError('Expected iid or skew08')
     task = validate_clients(source / 'clients', 1, require_patient_groups=True)
-    if task['modality'] != 'multimodal' or task.get('image_layout') != 'tiles16' or len(task['probes']) != 849:
-        raise ValueError('Expected the frozen multimodal 16-image/849-CpG export')
+    if task['modality'] != 'multimodal' or task.get('image_layout') != 'tiles16' or not task['probes']:
+        raise ValueError('Expected a frozen multimodal 16-image export with a shared CpG panel')
+    if task.get('student_loss'):
+        from pipelines.medgemma_student.inputs import verify_export
+        verify_export(source)
     original = signature(source)
     manifest = {r['patient_id']: r for r in read_tsv(source / 'splits.tsv')}
     records = {'train': json.loads((source / 'clients/site-1/train.json').read_text()),
@@ -30,7 +33,19 @@ def prepare(source, output, layout, seed=20261011):
     partition = 'iid' if layout == 'iid' else 'skew'
     assignments, converted = [], {}
     for split, rows in records.items():
-        owners = assign_sites([manifest[r['patient_id']] for r in rows], sites, partition, rng, .8)
+        owners = {}
+        if split == 'train' and task.get('student_loss'):
+            sources_by_patient = {}
+            for row in rows:
+                uid, label_source = row['canonical_uid'], row['label_source']
+                if sources_by_patient.setdefault(uid, label_source) != label_source:
+                    raise ValueError('Canonical patient has conflicting gold/silver provenance')
+        strata = ([source_name for source_name in ('gold', 'silver')
+                   if any(r.get('label_source') == source_name for r in rows)]
+                  if split == 'train' and task.get('student_loss') else [None])
+        for stratum in strata:
+            selected = [r for r in rows if stratum is None or r.get('label_source') == stratum]
+            owners.update(assign_sites([manifest[r['patient_id']] for r in selected], sites, partition, rng, .8))
         converted[split] = [{**r, 'site_id': owners[r['patient_id']]} for r in rows]
         for row in converted[split]:
             assignments.append(dict(patient_id=row['patient_id'], canonical_uid=row['canonical_uid'],
@@ -69,6 +84,8 @@ def prepare(source, output, layout, seed=20261011):
                                           for label in ('NEG', 'POS')}
     write_json(output / 'site_counts.json', record_counts)
     write_json(output / 'site_patient_counts.json', patient_counts)
+    label_source_counts = {site: dict(Counter(r.get('label_source', 'gold') for r in converted['train']
+                                           if r['site_id'] == site)) for site in sites}
     if signature(output) != original:
         raise ValueError('Cohort split signature changed')
     validate_clients(output / 'clients', 3, require_patient_groups=True)
@@ -81,6 +98,8 @@ def prepare(source, output, layout, seed=20261011):
                   assignments_sha256=digest(output / 'site_assignments.tsv'),
                   image_sha256={name: digest(source / name) for name in sorted(images)},
                   site_patient_counts=patient_counts, site_record_counts=record_counts,
+                  site_training_label_sources=label_source_counts, n_cpgs=len(task['probes']),
+                  student_loss=task.get('student_loss'),
                   unchanged_fields='all record fields except site_id; source CSVs, patient splits, prompts and image pixels unchanged',
                   aggregation_weight='training record count; repeated specimens remain in one client',
                   skew_definition='existing class-conditional allocation weights with dominant_fraction=0.8; realized client proportions are reported')

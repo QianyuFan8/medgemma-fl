@@ -183,6 +183,8 @@ def _build_training_args(args, output_dir: str, do_eval: bool) -> SFTConfig:
 def main():
     parser = argparse.ArgumentParser(description="Federated MedGemma client with QLoRA-based local training.")
     add_performance_args(parser)
+    parser.add_argument('--weighted_labels', action='store_true',
+                        help='Apply explicit gold/silver patient loss multipliers.')
     parser.add_argument("--task", choices=("histology", "methylation", "subtype"), default="histology")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--client_gpu_lock", default=None,
@@ -286,6 +288,16 @@ def main():
     validation_json = os.path.join(data_path, "validation.json")
     if not os.path.isfile(train_json):
         raise FileNotFoundError(f"Expected train.json at {train_json}.")
+    import json
+    from pathlib import Path
+    task_path = Path(data_path).parent.parent / 'task.json'
+    task_spec = json.loads(task_path.read_text()) if task_path.is_file() else {}
+    raw_records = json.loads(Path(train_json).read_text())
+    if (task_spec.get('student_loss') or any('student_loss_weight' in r for r in raw_records)) and not args.weighted_labels:
+        raise ValueError('Gold/silver records require --weighted_labels; refusing unweighted training')
+    if args.weighted_labels:
+        from medgemma_fl.weighted_sft import validate_student_weights
+        validate_student_weights(raw_records, task_spec.get('student_loss'))
 
     distributed = DistributedClient(flare)
     require_supported_gpu()
@@ -307,6 +319,9 @@ def main():
     else:
         collate_fn = _build_collate_fn(processor)
     collate_fn = maybe_cache_collator(collate_fn, processor, args)
+    if args.weighted_labels:
+        from medgemma_fl.weighted_sft import WeightedCollator
+        collate_fn = WeightedCollator(collate_fn)
     eval_dataset = (_load_site_split(validation_json, image_root, args.task)
                     if args.local_eval and os.path.isfile(validation_json) else None)
 
@@ -382,6 +397,7 @@ def main():
 
             trainer = fl_state.make_trainer(
                 SFTTrainer,
+                weighted_labels=args.weighted_labels,
                 model=model,
                 args=_build_training_args(args, round_output_dir, round_eval_dataset is not None),
                 train_dataset=train_dataset,
@@ -405,6 +421,10 @@ def main():
             diagnostics_name = 'training_diagnostics.json' if distributed.rank == 0 else f'rank-{distributed.rank}_performance.json'
             with open(os.path.join(round_output_dir, diagnostics_name), "w") as f:
                 json.dump({"seed": args.seed, "learning_rate": args.learning_rate,
+                           "weighted_labels": args.weighted_labels,
+                           "student_loss": task_spec.get('student_loss') if args.weighted_labels else None,
+                           "label_source_counts": {s: sum(r.get('label_source') == s for r in raw_records)
+                                                   for s in ('gold', 'silver')} if args.weighted_labels else None,
                            "num_train_epochs": args.num_train_epochs, "max_steps": args.max_steps,
                            "global_step": trainer.state.global_step, "epoch": trainer.state.epoch, "training_loss": train_loss,
                            "train_records": len(train_dataset), "log_history": trainer.state.log_history,

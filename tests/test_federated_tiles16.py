@@ -41,6 +41,30 @@ def source_fixture(root):
 
 
 class FederatedTilesTests(unittest.TestCase):
+    def test_gold_silver_repartition_preserves_weights_and_holdouts(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);source=source_fixture(root)
+            task=json.loads((source/'task.json').read_text())
+            task['student_loss']=dict(reduction='patient_mean_of_weighted_answer_token_mean',gold=1.,silver=.3)
+            (source/'task.json').write_text(json.dumps(task))
+            for path in [source/'validation.json',source/'test.json',source/'clients/site-1/train.json',source/'clients/site-1/validation.json']:
+                rows=json.loads(path.read_text())
+                for i,row in enumerate(rows):
+                    silver=path.name=='train.json' and int(row['canonical_uid'].rsplit('_',1)[-1])%3!=0
+                    row.update(label_source='silver' if silver else 'gold',student_loss_weight=.3 if silver else 1.)
+                path.write_text(json.dumps(rows))
+            (source/'student_inputs.json').write_text(json.dumps({'content_sha256':{}}))
+            for layout in ('iid','skew08'):
+                dest=root/layout;report=prepare(source,dest,layout)
+                self.assertEqual(report['student_loss'],task['student_loss'])
+                original=json.loads((source/'clients/site-1/train.json').read_text())
+                actual=[r for f in (dest/'clients').glob('*/train.json') for r in json.loads(f.read_text())]
+                clean=lambda rows:sorted(({k:v for k,v in r.items() if k!='site_id'} for r in rows),key=lambda r:r['patient_id'])
+                self.assertEqual(clean(original),clean(actual))
+                for split in ('validation','test'):
+                    self.assertEqual(clean(json.loads((source/f'{split}.json').read_text())),clean(json.loads((dest/f'{split}.json').read_text())))
+                verify(dest)
+
     def test_repartition_retains_inputs_and_patient_ownership(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td); source=source_fixture(root)

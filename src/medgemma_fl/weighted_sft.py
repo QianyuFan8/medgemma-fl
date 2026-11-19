@@ -8,6 +8,18 @@ import torch
 from medgemma_fl.fl_methods import answer_offsets
 
 
+def validate_student_weights(records, specification):
+    if not specification or specification.get('reduction') != 'patient_mean_of_weighted_answer_token_mean':
+        raise ValueError('Missing or unsupported student loss specification')
+    for row in records:
+        source = row.get('label_source')
+        weight = float(row.get('student_loss_weight', float('nan')))
+        if source not in ('gold', 'silver') or not math.isfinite(weight) or not 0 < weight <= 1:
+            raise ValueError('Invalid gold/silver loss weight or provenance')
+        if not math.isclose(weight, float(specification[source]), rel_tol=0, abs_tol=1e-12):
+            raise ValueError('Patient loss weight disagrees with the frozen export')
+
+
 class WeightedCollator:
     def __init__(self, collator):
         self.collator = collator

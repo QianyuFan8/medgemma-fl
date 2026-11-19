@@ -214,7 +214,7 @@ class FLMethodState:
 
     def fedlc_loss(self, unwrapped_model, inputs, wrapped_model=None):
         labels = inputs["labels"]
-        feats = {k: v for k, v in inputs.items() if k != "labels"}
+        feats = {k: v for k, v in inputs.items() if k not in ("labels", "student_loss_weight")}
         first, offset, _ = answer_offsets(labels)
         base = unwrapped_model.get_base_model() if hasattr(unwrapped_model, "get_base_model") else unwrapped_model
         backbone, lm_head = base.model, base.lm_head
@@ -238,10 +238,13 @@ class FLMethodState:
             if own not in self.token_ids.values():
                 raise ValueError(f"First answer token {own} is not a class option token {self.token_ids}; check the chat template")
             logits[i, pos] = fedlc_adjust(logits[i, pos], self.token_ids, self.margins)
+        if 'student_loss_weight' in inputs:
+            from medgemma_fl.weighted_sft import patient_weighted_ce
+            return patient_weighted_ce(logits, labels, offset, inputs['student_loss_weight'])
         return shifted_answer_ce(logits, labels, offset)
 
     # ---- trainer factory ------------------------------------------------------
-    def make_trainer(self, trainer_cls, **kwargs):
+    def make_trainer(self, trainer_cls, weighted_labels=False, **kwargs):
         state = self
         from transformers import TrainerCallback
 
@@ -257,14 +260,18 @@ class FLMethodState:
         class _MethodTrainer(trainer_cls):
             def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
                 if state.method != "fedlc":
+                    if weighted_labels:
+                        from medgemma_fl.weighted_sft import weighted_forward
+                        loss = weighted_forward(model, inputs)
+                        return (loss, {'loss': loss}) if return_outputs else loss
                     return super().compute_loss(model, inputs, return_outputs=return_outputs,
                                                 num_items_in_batch=num_items_in_batch)
                 loss = state.fedlc_loss(self.accelerator.unwrap_model(model), inputs,
-                                       wrapped_model=model if self.accelerator.num_processes > 1 else None)
+                                       wrapped_model=model if weighted_labels or self.accelerator.num_processes > 1 else None)
                 return (loss, {"loss": loss}) if return_outputs else loss  # dict keeps prediction_step happy
 
         trainer = _MethodTrainer(**kwargs)
-        if self.method == 'fedlc' and trainer.accelerator.num_processes > 1:
+        if weighted_labels or self.method == 'fedlc':
             # This custom loss is a microbatch mean; Trainer must divide by
             # accumulation steps rather than assume a num_items-normalized loss.
             trainer.model_accepts_loss_kwargs = False

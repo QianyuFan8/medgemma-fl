@@ -56,7 +56,7 @@ def training_command(data, dest, scope, method, rounds, local_epochs, smoke=Fals
     return cmd
 
 
-def verify_training(dest, scope, data, rounds, local_epochs, smoke=False):
+def verify_training(dest, scope, data, rounds, local_epochs, smoke=False, seed=SEED):
     workspace = dest / 'train'
     reports = []
     for site in ('site-1', 'site-2', 'site-3'):
@@ -77,7 +77,7 @@ def verify_training(dest, scope, data, rounds, local_epochs, smoke=False):
         for r, path in sorted(by_round.items()):
             report = json.loads(path.read_text())
             if (report['global_step'] < 1 or not math.isfinite(report['training_loss']) or
-                    report['seed'] != SEED or report['learning_rate'] != 5e-5 or
+                    report['seed'] != seed or report['learning_rate'] != 5e-5 or
                     report['train_records'] != expected_n or
                     (not smoke and (report['epoch'] < local_epochs - 1e-6 or report['max_steps'] is not None))):
                 raise RuntimeError(f'Incomplete or mismatched training at {site} round {r}')

@@ -3,10 +3,19 @@ import tempfile
 import unittest
 import torch
 from PIL import Image
-from medgemma_fl.training_cache import CachedCollator
+from medgemma_fl.training_cache import CachedCollator, processor_fingerprint
+from types import SimpleNamespace
 
 
 class CacheTests(unittest.TestCase):
+    def test_fingerprint_uses_packaged_training_module(self):
+        tokenizer=SimpleNamespace(special_tokens_map={},padding_side='right',
+                                  backend_tokenizer=SimpleNamespace(to_str=lambda:'test-tokenizer'))
+        processor=SimpleNamespace(tokenizer=tokenizer,to_dict=lambda:{'name':'test'})
+        first=processor_fingerprint(processor,'subtype',32768)
+        self.assertEqual(len(first),64)
+        self.assertEqual(first,processor_fingerprint(processor,'subtype',32768))
+
     def test_exact_tensors_and_invalidation(self):
         calls=[]
         def collate(rows):

@@ -47,7 +47,7 @@ def processor_fingerprint(processor, task, max_length):
                     if getattr(processor, 'image_processor', None) is not None else None,
                     versions={p: importlib.metadata.version(p) for p in ('torch', 'transformers', 'tokenizers', 'Pillow')},
                     code={name: hashlib.sha256((root/name).read_bytes()).hexdigest()
-                          for name in ('training_cache.py', 'train/client.py', 'subtype_utils.py', 'methylation_utils.py')})
+                          for name in ('training_cache.py', 'training/client.py', 'subtype_utils.py', 'methylation_utils.py')})
     return hashlib.sha256(json.dumps(metadata, sort_keys=True, default=str).encode()).hexdigest()
 
 
